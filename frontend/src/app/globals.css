@@ -1,0 +1,282 @@
+@import 'tailwindcss';
+@import 'leaflet/dist/leaflet.css';
+
+@theme inline {
+  --font-sans: var(--font-geist), ui-sans-serif, system-ui, sans-serif;
+  --font-serif: var(--font-instrument), ui-serif, Georgia, serif;
+
+  --color-sage: var(--sage);
+  --color-sand: var(--sand);
+  --color-mist: var(--mist);
+  --color-canvas: var(--canvas);
+  --color-signal: var(--signal);
+  --color-signal-foreground: var(--signal-foreground);
+
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+:root {
+  color-scheme: light;
+  --canvas: oklch(0.93 0.008 110);
+  --background: oklch(0.982 0.006 95);
+  --foreground: oklch(0.22 0.025 160);
+  --card: oklch(0.995 0.003 95);
+  --card-foreground: oklch(0.22 0.025 160);
+  --popover: oklch(0.995 0.003 95);
+  --popover-foreground: oklch(0.22 0.025 160);
+  --primary: oklch(0.3 0.045 162);
+  --primary-foreground: oklch(0.97 0.01 110);
+  --secondary: oklch(0.95 0.01 110);
+  --secondary-foreground: oklch(0.22 0.025 160);
+  --muted: oklch(0.955 0.008 100);
+  --muted-foreground: oklch(0.5 0.02 150);
+  --accent: oklch(0.92 0.04 140);
+  --accent-foreground: oklch(0.3 0.045 162);
+  --destructive: oklch(0.6 0.19 30);
+  --border: oklch(0.9 0.01 110);
+  --input: oklch(0.9 0.01 110);
+  --ring: oklch(0.55 0.06 155);
+
+  --signal: oklch(0.68 0.19 45);
+  --signal-foreground: oklch(0.99 0 0);
+
+  --sage: oklch(0.9 0.045 145);
+  --sand: oklch(0.92 0.05 85);
+  --mist: oklch(0.9 0.025 220);
+
+  --chart-1: oklch(0.72 0.07 150);
+  --chart-2: oklch(0.86 0.07 85);
+  --chart-3: oklch(0.82 0.04 210);
+  --chart-4: oklch(0.74 0.05 280);
+  --chart-5: oklch(0.42 0.05 160);
+  --radius: 0.75rem;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-canvas text-foreground font-sans;
+  }
+}
+
+@utility hatch {
+  background-image: repeating-linear-gradient(
+    135deg,
+    color-mix(in oklab, white 22%, transparent) 0 2px,
+    transparent 2px 9px
+  );
+}
+
+.leaflet-container {
+  font-family: inherit;
+  background-color: #f7f6f2 !important;
+  outline: none;
+}
+
+.map-tiles {
+  filter: saturate(0.9) contrast(1.02);
+}
+
+.route-line {
+  stroke: #162a22 !important;
+  stroke-opacity: 0.65 !important;
+  transition: stroke 0.3s ease, stroke-width 0.3s ease, stroke-opacity 0.3s ease;
+}
+
+.route-line--active {
+  stroke: #162a22 !important;
+  stroke-opacity: 1 !important;
+  stroke-width: 4.5px !important;
+}
+
+.route-line--dim {
+  stroke: #94a3b8 !important;
+  stroke-opacity: 0.25 !important;
+  stroke-width: 2.5px !important;
+}
+
+.route-line--progress {
+  stroke: #f97316 !important;
+  stroke-opacity: 0.95 !important;
+  stroke-linecap: round !important;
+}
+
+.stop-dot {
+  fill: #ffffff !important;
+  stroke: #162a22 !important;
+  stroke-width: 2px !important;
+  transition: transform 0.2s ease, fill 0.2s ease;
+}
+
+.stop-dot--active {
+  fill: #f97316 !important;
+  stroke: #ffffff !important;
+  stroke-width: 2.5px !important;
+}
+
+.route-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 6px;
+  border-radius: 9999px;
+  background-color: #ffffff;
+  color: #162a22;
+  font-size: 11px;
+  font-weight: 700;
+  border: 1.5px solid #162a22;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
+  user-select: none;
+  white-space: nowrap;
+}
+
+.route-badge--active {
+  background-color: #162a22;
+  color: #ffffff;
+  border-color: #f97316;
+  transform: scale(1.1);
+  box-shadow: 0 4px 10px rgba(22, 42, 34, 0.25);
+}
+
+.bus-marker {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 9999px;
+  background-color: #162a22;
+  color: #ffffff;
+  border: 2px solid #ffffff;
+  box-shadow: 0 4px 12px rgba(22, 42, 34, 0.35);
+  cursor: pointer;
+  transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.2s ease;
+}
+
+.bus-marker svg {
+  width: 18px;
+  height: 18px;
+}
+
+.bus-marker:hover {
+  transform: scale(1.12);
+  box-shadow: 0 6px 16px rgba(22, 42, 34, 0.45);
+}
+
+.bus-marker--selected {
+  background-color: #f97316;
+  color: #ffffff;
+  border-color: #ffffff;
+  transform: scale(1.2);
+  box-shadow: 0 0 0 4px rgba(249, 115, 22, 0.3), 0 8px 20px rgba(249, 115, 22, 0.5);
+}
+
+.bus-marker--delayed {
+  background-color: #dc2626;
+  border-color: #fee2e2;
+}
+
+.bus-marker--completed {
+  background-color: #059669;
+  border-color: #d1fae5;
+}
+
+.bus-marker__heading {
+  position: absolute;
+  top: -6px;
+  left: 50%;
+  width: 0;
+  height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-bottom: 7px solid #f97316;
+  transform-origin: 50% 24px;
+  pointer-events: none;
+}
+
+.bus-marker__label {
+  position: absolute;
+  bottom: -18px;
+  left: 50%;
+  transform: translateX(-50%);
+  background-color: rgba(22, 42, 34, 0.95);
+  color: #ffffff;
+  font-size: 9px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+  z-index: 10;
+}
+
+.bus-marker__label--top {
+  bottom: auto;
+  top: -20px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.bus-marker__label--bottom-left {
+  bottom: -20px;
+  left: -10px;
+  transform: none;
+}
+
+.bus-marker__label--bottom-right {
+  bottom: -20px;
+  right: -10px;
+  left: auto;
+  transform: none;
+}
+
+.bus-marker__label--top-left {
+  bottom: auto;
+  top: -20px;
+  left: -10px;
+  transform: none;
+}
+
+.bus-marker__label--top-right {
+  bottom: auto;
+  top: -20px;
+  right: -10px;
+  left: auto;
+  transform: none;
+}

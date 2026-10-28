@@ -1,0 +1,38 @@
+# Go binaries and build artifacts
+backend/bin/
+backend/tmp/
+bin/
+tmp/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.out
+
+# Node / Next.js
+node_modules/
+frontend/node_modules/
+.next/
+frontend/.next/
+out/
+frontend/out/
+
+# Archives and OS artifacts
+*.zip
+*.tar.gz
+.DS_Store
+Thumbs.db
+*.log
+
+# Environment & IDE
+.env
+.env.*
+!.env.example
+.vscode/
+.idea/
+
+# Root reference artifacts
+/screen.png
+/code.html
+/*.webp.webp

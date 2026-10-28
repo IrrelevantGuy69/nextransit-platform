@@ -1,0 +1,452 @@
+'use client';
+
+import React, { useState, useMemo, useCallback, useEffect } from 'react';
+import dynamic from 'next/dynamic';
+import type { Map as LeafletMap } from 'leaflet';
+import {
+  Bus,
+  CheckCircle2,
+  Clock,
+  Gauge,
+  Milestone,
+  Navigation,
+  Route as RouteIcon,
+  Users,
+} from 'lucide-react';
+import {
+  BusSnapshot,
+  Route as RouteEntity,
+  Stop,
+  StopETA,
+  TransitEvent,
+  UserRole,
+} from '@/lib/api';
+import { MapControls, LiveBadge } from './MapControls';
+import { RoleFilter } from './RoleFilter';
+import { StatPills } from './StatPills';
+import { RoutePanel } from './RoutePanel';
+import { StatPillItem, TripStatusFilter, StudioStop } from './types';
+
+const FleetSpatialMap = dynamic(() => import('./FleetSpatialMap'), {
+  ssr: false,
+  loading: () => (
+    <div className="w-full h-[560px] relative rounded-[28px] overflow-hidden flex items-center justify-center bg-card border border-border">
+      <div className="flex items-center gap-2.5 text-xs font-sans text-muted-foreground animate-pulse">
+        <Navigation className="size-4 text-[#162A22] animate-spin" />
+        <span>Connecting to live transit stream…</span>
+      </div>
+    </div>
+  ),
+});
+
+interface LiveSpatialDashboardProps {
+  tenantId: string;
+  tenantName?: string;
+  stops: Stop[];
+  routes: RouteEntity[];
+  activeRoute: RouteEntity | null;
+  snapshots: BusSnapshot[];
+  activeSnapshot: BusSnapshot | null;
+  selectedBusId: string | null;
+  onSelectBus: (busId: string) => void;
+  onResetTrip?: (busId: string) => Promise<void>;
+  userRole: UserRole;
+  onRoleChange?: (role: UserRole) => void;
+  stopETAs: StopETA[];
+  transitEvents?: TransitEvent[];
+  isSimulating?: boolean;
+  onToggleSimulate?: () => void;
+  studioMode?: boolean;
+  isCreatingRoute?: boolean;
+  studioStops?: StudioStop[];
+  onMapClick?: (lat: number, lng: number) => void;
+  onRemoveStudioStop?: (index: number) => void;
+  onReady?: (map: LeafletMap) => void;
+}
+
+export function LiveSpatialDashboard({
+  tenantId,
+  tenantName,
+  stops = [],
+  routes = [],
+  activeRoute,
+  snapshots = [],
+  activeSnapshot,
+  selectedBusId,
+  onSelectBus,
+  onResetTrip,
+  userRole,
+  onRoleChange,
+  stopETAs = [],
+  transitEvents = [],
+  isSimulating = true,
+  onToggleSimulate,
+  studioMode = false,
+  isCreatingRoute = false,
+  studioStops = [],
+  onMapClick,
+  onRemoveStudioStop,
+  onReady,
+}: LiveSpatialDashboardProps) {
+  const isStudioActive = studioMode || isCreatingRoute;
+  const safeStops = stops || [];
+  const safeRoutes = routes || [];
+  const safeSnapshots = snapshots || [];
+  const safeEtas = stopETAs || [];
+  const safeEvents = transitEvents || [];
+
+  const [internalRole, setInternalRole] = useState<UserRole>(userRole);
+  const [showRoutes, setShowRoutes] = useState<boolean>(true);
+  const [statusFilter, setStatusFilter] = useState<TripStatusFilter>('all');
+  const [selectedRouteId, setSelectedRouteId] = useState<string>('all');
+  const [recenterCount, setRecenterCount] = useState<number>(0);
+  const [mapInstance, setMapInstance] = useState<LeafletMap | null>(null);
+
+  const currentRole = onRoleChange ? userRole : internalRole;
+
+  useEffect(() => {
+    if (mapInstance) {
+      const raf = requestAnimationFrame(() => {
+        mapInstance.invalidateSize();
+      });
+      const timer = setTimeout(() => {
+        if ('invalidateSize' in mapInstance) {
+          mapInstance.invalidateSize();
+        }
+        const candidate = mapInstance as unknown as Record<string, unknown>;
+        if (typeof candidate.resize === 'function') {
+          (candidate.resize as () => void)();
+        }
+      }, 150);
+      return () => {
+        cancelAnimationFrame(raf);
+        clearTimeout(timer);
+      };
+    }
+  }, [mapInstance, isStudioActive]);
+
+  const handleRoleSelect = useCallback(
+    (role: UserRole) => {
+      if (onRoleChange) {
+        onRoleChange(role);
+      } else {
+        setInternalRole(role);
+      }
+    },
+    [onRoleChange],
+  );
+
+  const handleRecenter = useCallback(() => {
+    setRecenterCount((c) => c + 1);
+    if (mapInstance && safeStops.length > 0) {
+      const bounds = safeStops
+        .filter((s) => s && typeof s.latitude === 'number' && typeof s.longitude === 'number' && !isNaN(s.latitude) && !isNaN(s.longitude))
+        .map((s) => [s.latitude, s.longitude] as [number, number]);
+      if (bounds.length > 0) {
+        mapInstance.flyToBounds(bounds, { padding: [40, 40], duration: 0.8 });
+      }
+    }
+  }, [mapInstance, safeStops]);
+
+  const handleZoomIn = useCallback(() => {
+    mapInstance?.zoomIn();
+  }, [mapInstance]);
+
+  const handleZoomOut = useCallback(() => {
+    mapInstance?.zoomOut();
+  }, [mapInstance]);
+
+  const focusKey = useMemo(() => {
+    return `${tenantId}:${currentRole}:${selectedBusId ?? 'none'}:${selectedRouteId}:${recenterCount}`;
+  }, [tenantId, currentRole, selectedBusId, selectedRouteId, recenterCount]);
+
+  const filteredSnapshots = useMemo(() => {
+    if (selectedRouteId === 'all') return safeSnapshots;
+    return safeSnapshots.filter((b) => b && b.route_id === selectedRouteId);
+  }, [safeSnapshots, selectedRouteId]);
+
+  const hasAntiOverlapOffset = useMemo(() => {
+    for (let i = 0; i < filteredSnapshots.length; i++) {
+      for (let j = i + 1; j < filteredSnapshots.length; j++) {
+        const b1 = filteredSnapshots[i];
+        const b2 = filteredSnapshots[j];
+        if (b1 && b2 && typeof b1.latitude === 'number' && typeof b2.latitude === 'number') {
+          const dist = Math.hypot(
+            b1.latitude - b2.latitude,
+            b1.longitude - b2.longitude,
+          );
+          if (dist < 0.0012) return true;
+        }
+      }
+    }
+    return false;
+  }, [filteredSnapshots]);
+
+  const statItems = useMemo<StatPillItem[]>(() => {
+    if (currentRole === 'DRIVER') {
+      const driverBus =
+        safeSnapshots.find((b) => b && b.bus_id === selectedBusId) ?? safeSnapshots[0] ?? null;
+      const progressPercent = Math.min(
+        100,
+        Math.max(0, Math.round(driverBus?.progress_pct ?? 0)),
+      );
+      const isCompleted =
+        driverBus?.bus_status === 'COMPLETED' || driverBus?.trip_status === 'JOURNEY_ENDED';
+      const upcomingEta = safeEtas.find(
+        (e) => e && e.bus_id === driverBus?.bus_id && e.eta_minutes > 0,
+      );
+
+      return [
+        {
+          label: 'Corridor',
+          value: driverBus?.route_code || activeRoute?.code || 'Route 1',
+          icon: RouteIcon,
+          tone: 'signal',
+        },
+        {
+          label: 'Next waypoint',
+          value: isCompleted
+            ? 'Terminal reached'
+            : upcomingEta
+            ? `${Math.round(upcomingEta.eta_minutes)} min`
+            : 'At stop',
+          icon: Clock,
+          tone: 'sage',
+        },
+        {
+          label: 'Onboard load',
+          value: `${driverBus?.occupancy ?? 0} / ${driverBus?.capacity ?? 40}`,
+          icon: Users,
+          tone: 'primary',
+        },
+        {
+          label: 'Route completed',
+          value: `${progressPercent}%`,
+          icon: Gauge,
+          tone: 'mist',
+        },
+      ];
+    }
+
+    if (currentRole === 'RIDER') {
+      const activeBuses = safeSnapshots.filter(
+        (b) => b && b.bus_status !== 'COMPLETED' && b.trip_status !== 'JOURNEY_ENDED',
+      );
+      const nearestEta = safeEtas.find((e) => e && e.eta_minutes > 0);
+      const driverBus = activeSnapshot ?? safeSnapshots[0] ?? null;
+      const seatsFree = driverBus
+        ? Math.max(0, driverBus.capacity - driverBus.occupancy)
+        : 18;
+
+      return [
+        {
+          label: 'Active vehicles',
+          value: activeBuses.length,
+          icon: Bus,
+          tone: 'primary',
+        },
+        {
+          label: 'Approaching bus',
+          value: nearestEta ? `${Math.round(nearestEta.eta_minutes)} min` : '5 min',
+          icon: Clock,
+          tone: 'signal',
+        },
+        {
+          label: 'Available seats',
+          value: seatsFree,
+          icon: Users,
+          tone: 'sage',
+        },
+        {
+          label: 'Active corridor',
+          value: activeRoute?.code || 'R1',
+          icon: Milestone,
+          tone: 'mist',
+        },
+      ];
+    }
+
+    const inTransitCount = safeSnapshots.filter(
+      (b) => b && b.bus_status !== 'COMPLETED' && b.trip_status !== 'JOURNEY_ENDED',
+    ).length;
+    const completedCount = safeSnapshots.filter(
+      (b) => b && (b.bus_status === 'COMPLETED' || b.trip_status === 'JOURNEY_ENDED'),
+    ).length;
+
+    return [
+      {
+        label: 'Total vehicles',
+        value: safeSnapshots.length,
+        icon: Bus,
+        tone: 'primary',
+      },
+      {
+        label: 'In transit',
+        value: inTransitCount,
+        icon: Gauge,
+        tone: 'sage',
+      },
+      {
+        label: 'Trips finished',
+        value: completedCount,
+        icon: CheckCircle2,
+        tone: 'mist',
+      },
+      {
+        label: 'Active lines',
+        value: safeRoutes.length || 1,
+        icon: RouteIcon,
+        tone: 'signal',
+      },
+    ];
+  }, [currentRole, safeSnapshots, selectedBusId, activeRoute, safeEtas, activeSnapshot, safeRoutes.length]);
+
+  return (
+    <div className="flex flex-col gap-4 font-sans">
+      {!isStudioActive && (
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <StatPills items={statItems} />
+          <RoleFilter value={currentRole} onChange={handleRoleSelect} />
+        </div>
+      )}
+
+      <div className="w-full min-h-[560px] h-[560px] relative rounded-[28px] overflow-hidden border border-black/[0.06] shadow-sm">
+        <FleetSpatialMap
+          tenantId={tenantId}
+          stops={safeStops}
+          routes={safeRoutes}
+          activeRoute={activeRoute}
+          snapshots={safeSnapshots}
+          activeSnapshot={activeSnapshot}
+          selectedBusId={selectedBusId}
+          selectedRouteId={selectedRouteId}
+          stopETAs={safeEtas}
+          showRoutes={showRoutes}
+          focusKey={focusKey}
+          onSelectBus={onSelectBus}
+          onReady={(map) => {
+            setMapInstance(map);
+            if (onReady) onReady(map);
+          }}
+          studioMode={isStudioActive}
+          isCreatingRoute={isStudioActive}
+          studioStops={studioStops}
+          onMapClick={onMapClick}
+          onRemoveStudioStop={onRemoveStudioStop}
+        />
+
+        {!isStudioActive && (
+          <div className="absolute top-4 left-4 lg:left-[388px] right-4 z-[500] pointer-events-auto flex flex-wrap items-center justify-between gap-2.5 bg-white/95 backdrop-blur-md px-4 py-2.5 rounded-2xl border border-black/10 shadow-lg font-sans">
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-[#162A22]">
+                <span className="text-[11px] font-medium text-black/50">Corridor:</span>
+                <select
+                  value={selectedRouteId}
+                  onChange={(e) => {
+                    setSelectedRouteId(e.target.value);
+                    if (e.target.value !== 'all' && selectedBusId) {
+                      const busMatches = safeSnapshots.find(
+                        (b) => b.bus_id === selectedBusId && b.route_id === e.target.value,
+                      );
+                      if (!busMatches) onSelectBus('');
+                    }
+                  }}
+                  className="bg-[#F7F6F2] hover:bg-[#EFECE6] border border-black/[0.08] text-[#162A22] text-xs font-medium rounded-xl px-2.5 py-1.5 outline-none cursor-pointer transition-colors"
+                >
+                  <option value="all">All corridors ({safeRoutes.length || 3})</option>
+                  {safeRoutes.map((rt) => (
+                    <option key={rt.id} value={rt.id}>
+                      {rt.code} · {rt.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="h-4 w-px bg-black/10 mx-1 hidden sm:block" />
+
+              <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => onSelectBus('')}
+                  className={`px-3 py-1 rounded-xl text-xs font-medium transition-all cursor-pointer ${
+                    !selectedBusId
+                      ? 'bg-[#162A22] text-white shadow-xs'
+                      : 'bg-[#F7F6F2] hover:bg-[#EFECE6] text-[#162A22] border border-black/[0.06]'
+                  }`}
+                >
+                  All buses ({filteredSnapshots.length})
+                </button>
+
+                {filteredSnapshots.map((bus) => {
+                  const isSelected = bus.bus_id === selectedBusId;
+                  return (
+                    <button
+                      key={bus.bus_id}
+                      type="button"
+                      onClick={() => onSelectBus(bus.bus_id)}
+                      className={`px-2.5 py-1 rounded-xl text-xs font-medium transition-all cursor-pointer flex items-center gap-1.5 ${
+                        isSelected
+                          ? 'bg-[#162A22] text-white shadow-xs'
+                          : 'bg-[#F7F6F2] hover:bg-[#EFECE6] text-[#162A22] border border-black/[0.06]'
+                      }`}
+                    >
+                      <span
+                        className={`w-1.5 h-1.5 rounded-full ${
+                          bus.speed_kmh < 15 ? 'bg-amber-400' : 'bg-emerald-500'
+                        }`}
+                      />
+                      <span>{bus.fleet_code}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {hasAntiOverlapOffset && (
+              <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#E6F4EA] border border-[#162A22]/10 text-[11px] font-medium text-[#162A22]">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                <span>Anti-overlap offset</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        <LiveBadge
+          paused={!isSimulating}
+          onToggle={() => onToggleSimulate && onToggleSimulate()}
+        />
+
+        <MapControls
+          showRoutes={showRoutes}
+          onShowRoutesChange={setShowRoutes}
+          onZoomIn={handleZoomIn}
+          onZoomOut={handleZoomOut}
+          onRecenter={handleRecenter}
+        />
+
+        {!isStudioActive && (
+          <div className="absolute bottom-4 left-4 top-16 z-[500] w-[340px] pointer-events-auto hidden md:block">
+            <RoutePanel
+              role={currentRole}
+              routes={safeRoutes}
+              activeRoute={activeRoute}
+              stops={safeStops}
+              snapshots={safeSnapshots}
+              selectedBusId={selectedBusId}
+              onSelectBus={onSelectBus}
+              onResetTrip={onResetTrip}
+              statusFilter={statusFilter}
+              onStatusFilterChange={setStatusFilter}
+              selectedRouteId={selectedRouteId}
+              onRouteChange={setSelectedRouteId}
+              stopETAs={safeEtas}
+              transitEvents={safeEvents}
+            />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default LiveSpatialDashboard;
