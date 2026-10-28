@@ -3385,7 +3385,6 @@ export default function Home() {
         type: 'success',
         message: `Offline mode: GPS ping #${nextSeq} queued in local buffer`,
       });
-      setTimeout(() => setNotification(null), 3000);
       return;
     }
     await handleSimulateStep();
@@ -3412,12 +3411,10 @@ export default function Home() {
           type: 'success',
           message: `Idempotent batch sync complete: ${res.synced_count} pings forwarded to TimescaleDB (${res.duplicate_count} duplicates avoided)`,
         });
-        setTimeout(() => setNotification(null), 4000);
         void fetchTenantData(selectedTenantId, selectedRole);
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : 'Sync failed';
         setNotification({ type: 'error', message: msg });
-        setTimeout(() => setNotification(null), 4000);
       } finally {
         setIsSyncingBatch(false);
       }
@@ -3699,13 +3696,11 @@ export default function Home() {
         type: 'success',
         message: `Exported GTFS-Realtime JSON feed for ${activeTenant.name}`,
       });
-      setTimeout(() => setNotification(null), 4000);
     } catch {
       setNotification({
         type: 'error',
         message: 'Failed to download GTFS-RT feed',
       });
-      setTimeout(() => setNotification(null), 4000);
     } finally {
       setIsDownloadingGtfsRt(false);
     }
@@ -3720,14 +3715,12 @@ export default function Home() {
         type: 'success',
         message: `Load test complete: ${result.total_pings} pings ingested at ${result.throughput_pings_sec.toLocaleString()} pings/sec (${result.duration_ms}ms)`,
       });
-      setTimeout(() => setNotification(null), 5000);
       void fetchTenantData(selectedTenantId, selectedRole);
     } catch {
       setNotification({
         type: 'error',
         message: 'Load test failed to execute',
       });
-      setTimeout(() => setNotification(null), 4000);
     } finally {
       setIsRunningLoadTest(false);
     }
@@ -3742,7 +3735,6 @@ export default function Home() {
         type: report.success ? 'success' : 'error',
         message: `${scenario}: ${report.message} (p99: ${report.latency_p99_ms} ms)`,
       });
-      setTimeout(() => setNotification(null), 5000);
       void fetchTenantData(selectedTenantId, selectedRole);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Chaos scenario execution failed';
@@ -3750,7 +3742,6 @@ export default function Home() {
         type: 'error',
         message: msg,
       });
-      setTimeout(() => setNotification(null), 4000);
     } finally {
       setActiveChaosScenario(null);
     }
@@ -3822,7 +3813,6 @@ export default function Home() {
       type: 'success',
       message: `Exported GTFS CSV package for ${activeTenant.name}`,
     });
-    setTimeout(() => setNotification(null), 4000);
   };
 
   const handleCreateTenantSubmit = async (e: React.FormEvent) => {
@@ -3844,7 +3834,6 @@ export default function Home() {
       setNewTenantSlug('');
       setShowCreateTenant(false);
       setNotification({ type: 'success', message: `Workspace ${created.name} created successfully` });
-      setTimeout(() => setNotification(null), 4000);
     } catch {
       const mockTenant: Tenant = {
         id: `mock-${Date.now()}`,
@@ -3859,7 +3848,6 @@ export default function Home() {
       setNewTenantSlug('');
       setShowCreateTenant(false);
       setNotification({ type: 'success', message: `Workspace ${mockTenant.name} registered in offline cache` });
-      setTimeout(() => setNotification(null), 4000);
     }
   };
 
@@ -3877,7 +3865,6 @@ export default function Home() {
       setNewMemberEmail('');
       setShowAddMember(false);
       setNotification({ type: 'success', message: `Member ${created.email} invited to workspace` });
-      setTimeout(() => setNotification(null), 4000);
     } catch {
       const mockUser: User = {
         id: `u-${Date.now()}`,
@@ -3890,7 +3877,6 @@ export default function Home() {
       setNewMemberEmail('');
       setShowAddMember(false);
       setNotification({ type: 'success', message: `Member ${mockUser.email} registered in offline cache` });
-      setTimeout(() => setNotification(null), 4000);
     }
   };
 
@@ -3915,7 +3901,6 @@ export default function Home() {
       setNewBusRouteId('');
       setShowAddBus(false);
       setNotification({ type: 'success', message: `Vehicle ${created.fleet_code} registered in fleet` });
-      setTimeout(() => setNotification(null), 4000);
       void fetchTenantData(selectedTenantId, selectedRole);
     } catch {
       const mockBus: BusEntity = {
@@ -3935,7 +3920,6 @@ export default function Home() {
       setNewBusRouteId('');
       setShowAddBus(false);
       setNotification({ type: 'success', message: `Vehicle ${mockBus.fleet_code} added in offline cache` });
-      setTimeout(() => setNotification(null), 4000);
     }
   };
 
@@ -3956,7 +3940,6 @@ export default function Home() {
       setNewStopCode('');
       setShowAddStop(false);
       setNotification({ type: 'success', message: `PostGIS stop ${created.name} registered successfully` });
-      setTimeout(() => setNotification(null), 4000);
     } catch {
       const mockStop: Stop = {
         id: `st-${Date.now()}`,
@@ -3972,7 +3955,6 @@ export default function Home() {
       setNewStopCode('');
       setShowAddStop(false);
       setNotification({ type: 'success', message: `Stop ${mockStop.name} added in offline cache` });
-      setTimeout(() => setNotification(null), 4000);
     }
   };
 
@@ -3998,7 +3980,6 @@ export default function Home() {
       setNewRouteDest('');
       setShowAddRoute(false);
       setNotification({ type: 'success', message: `Route ${created.name} registered successfully` });
-      setTimeout(() => setNotification(null), 4000);
     } catch {
       const mockRoute: RouteEntity = {
         id: `rt-${Date.now()}`,
@@ -4019,7 +4000,6 @@ export default function Home() {
       setNewRouteDest('');
       setShowAddRoute(false);
       setNotification({ type: 'success', message: `Route ${mockRoute.name} added in offline cache` });
-      setTimeout(() => setNotification(null), 4000);
     }
   };
 
@@ -4069,7 +4049,6 @@ export default function Home() {
       setStudioRouteCode('');
       setStudioBusId('');
       setNotification({ type: 'success', message: `Route ${created.name} dispatched with ${studioStops.length} waypoints` });
-      setTimeout(() => setNotification(null), 4000);
       void fetchTenantData(selectedTenantId, selectedRole);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to save route';
@@ -4180,14 +4159,12 @@ export default function Home() {
         type: 'success',
         message: `Seat ${seatNum} held for 10 minutes. Please confirm before hold expires.`,
       });
-      setTimeout(() => setNotification(null), 4000);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Seat unavailable';
       setNotification({
         type: 'error',
         message: msg,
       });
-      setTimeout(() => setNotification(null), 4000);
     } finally {
       setIsHoldingSeat(false);
     }
@@ -4207,14 +4184,12 @@ export default function Home() {
         type: 'success',
         message: `Seat reservation confirmed! Ticket: ${booking.ticket_code}`,
       });
-      setTimeout(() => setNotification(null), 4000);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to confirm reservation';
       setNotification({
         type: 'error',
         message: msg,
       });
-      setTimeout(() => setNotification(null), 4000);
     } finally {
       setIsBookingSeat(false);
     }
@@ -4227,7 +4202,6 @@ export default function Home() {
         type: 'error',
         message: 'No active scheduled trip found for concurrency test',
       });
-      setTimeout(() => setNotification(null), 4000);
       return;
     }
     setIsSimulatingClash(true);
@@ -4242,14 +4216,12 @@ export default function Home() {
         type: 'success',
         message: `${result.success_count} Succeeded, ${result.conflict_count} Blocked by Row Lock (Zero Double-Booking Verified)`,
       });
-      setTimeout(() => setNotification(null), 5000);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Concurrency clash test failed';
       setNotification({
         type: 'error',
         message: msg,
       });
-      setTimeout(() => setNotification(null), 4000);
     } finally {
       setIsSimulatingClash(false);
     }
@@ -6497,10 +6469,10 @@ export default function Home() {
               <div className="flex flex-col md:flex-row md:items-end justify-between gap-6 mb-8">
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                    DEMAND SCHEDULE OPTIMIZATION &amp; PUBLIC TRANSIT API
+                    DEMAND SCHEDULE OPTIMIZATION
                   </p>
                   <h2 className="mt-2 text-3xl font-semibold tracking-tight sm:text-4xl text-[#162A22]">
-                    Corridor Headway Optimizer &amp; <span className="font-serif font-normal italic text-chart-5">Public Feeds.</span>
+                    Corridor Headway <span className="font-serif font-normal italic text-chart-5">Optimizer.</span>
                   </h2>
                 </div>
                 <div className="flex flex-wrap items-center gap-3">
@@ -6513,344 +6485,145 @@ export default function Home() {
                     onClick={() => setShowPublicApiModal(true)}
                     className="bg-white hover:bg-[#F0F5F2] text-[#162A22] font-sans text-xs font-medium px-4 py-2.5 rounded-full shadow-sm border border-black/[0.06] flex items-center gap-2 cursor-pointer transition-all"
                   >
-                    <span>Full Screen API Docs</span>
+                    <span>Public API &amp; Webhooks</span>
                     <ArrowUpRight className="size-3.5 text-[#162A22]" />
                   </button>
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-                <div className="lg:col-span-7 bg-white rounded-[26px] p-6 shadow-[0_14px_30px_-10px_rgba(0,0,0,0.04)] border border-black/[0.04] space-y-6">
-                  <div className="flex items-center justify-between pb-4 border-b border-black/[0.04]">
-                    <div className="flex items-center gap-3">
-                      <span className="grid size-10 place-items-center rounded-2xl bg-[#E6F4EA] text-[#162A22]">
-                        <Activity className="size-5" />
-                      </span>
-                      <div>
-                        <h3 className="text-base font-semibold text-[#162A22]">Demand-Based Headway Optimizer</h3>
-                        <p className="text-xs text-black/50">Dynamic vehicle dispatch recommendations based on seat bookings &amp; stop density</p>
-                      </div>
-                    </div>
-                    <span className="px-3 py-1 rounded-full text-[11px] font-semibold bg-[#F7F6F2] text-[#162A22] border border-black/[0.06]">
-                      {demandSuggestions.length} corridors analyzed
-                    </span>
-                  </div>
+              {demandSuggestions.length === 0 ? (
+                <div className="p-12 text-center rounded-[26px] bg-white border border-black/[0.04] shadow-[0_14px_30px_-10px_rgba(0,0,0,0.04)] space-y-2">
+                  <CheckCircle2 className="size-7 text-[#10B981] mx-auto" />
+                  <p className="text-sm text-[#162A22] font-semibold">Corridor Headways Optimal</p>
+                  <p className="text-xs text-black/50">
+                    No high-occupancy congestion or bottleneck crowding detected across active corridor segments.
+                  </p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-5 items-stretch">
+                  {demandSuggestions.map((sug, idx) => {
+                    const isApplied = Boolean(appliedSchedules[sug.route_id]);
+                    const isApplying = applyingRouteId === sug.route_id;
+                    const load = Number(sug.load_factor_pct ?? sug.booking_density_pct ?? 0);
+                    const currentH = sug.current_headway_min ?? sug.current_headway_mins ?? 15;
+                    const recommendedH = sug.recommended_headway_min ?? sug.recommended_headway_mins ?? 10;
+                    const bottleneck = sug.bottleneck_stop || sug.segment || 'Corridor waypoint';
 
-                  {demandSuggestions.length === 0 ? (
-                    <div className="p-8 text-center rounded-2xl bg-[#F7F6F2] border border-black/[0.04] space-y-2">
-                      <CheckCircle2 className="size-6 text-[#10B981] mx-auto" />
-                      <p className="text-sm text-[#162A22] font-semibold">Corridor Headways Optimal</p>
-                      <p className="text-xs text-black/50">
-                        No high-occupancy congestion or bottleneck crowding detected across active corridor segments.
-                      </p>
-                    </div>
-                  ) : (
-                    <div className="space-y-4">
-                      {demandSuggestions.map((sug, idx) => {
-                        const isApplied = Boolean(appliedSchedules[sug.route_id]);
-                        const isApplying = applyingRouteId === sug.route_id;
-                        const load = Number(sug.load_factor_pct ?? sug.booking_density_pct ?? 0);
-                        const currentH = sug.current_headway_min ?? sug.current_headway_mins ?? 15;
-                        const recommendedH = sug.recommended_headway_min ?? sug.recommended_headway_mins ?? 10;
-                        const bottleneck = sug.bottleneck_stop || sug.segment || 'Corridor waypoint';
-
-                        return (
-                          <div
-                            key={`${sug.route_id}-${idx}`}
-                            className="p-5 rounded-2xl border border-black/[0.04] bg-[#F7F6F2]/60 hover:bg-[#F7F6F2] transition-all space-y-4"
-                          >
-                            <div className="flex items-start justify-between gap-3">
-                              <div className="space-y-1">
-                                <div className="flex items-center gap-2">
-                                  <span className="px-2.5 py-0.5 rounded-full bg-[#E6F4EA] text-[#162A22] font-semibold text-[11px]">
-                                    {sug.route_code}
-                                  </span>
-                                  <span className="text-xs text-black/40">·</span>
-                                  <span className="text-xs text-black/50">{sug.peak_window}</span>
-                                </div>
-                                <h4 className="font-semibold text-sm text-[#162A22]">{sug.route_name}</h4>
+                    return (
+                      <div
+                        key={`${sug.route_id}-${idx}`}
+                        className="rounded-[26px] p-6 border border-black/[0.04] bg-white shadow-[0_14px_30px_-10px_rgba(0,0,0,0.04)] flex flex-col justify-between space-y-5 transition-all hover:shadow-[0_20px_40px_-15px_rgba(0,0,0,0.07)]"
+                      >
+                        <div className="space-y-4">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="space-y-1">
+                              <div className="flex items-center gap-2">
+                                <span className="px-2.5 py-0.5 rounded-full bg-[#E6F4EA] text-[#162A22] font-semibold text-[11px]">
+                                  {sug.route_code}
+                                </span>
+                                <span className="text-xs text-black/40">·</span>
+                                <span className="text-xs text-black/50">{sug.peak_window}</span>
                               </div>
-                              <span
-                                className={cn(
-                                  'px-2.5 py-1 rounded-full text-[10px] font-semibold tracking-wide uppercase shrink-0',
-                                  sug.urgency === 'HIGH'
-                                    ? 'bg-amber-100 text-amber-900 border border-amber-200'
-                                    : sug.urgency === 'MEDIUM'
-                                    ? 'bg-blue-50 text-blue-800 border border-blue-200'
-                                    : 'bg-white text-[#162A22] border border-black/[0.06]'
-                                )}
-                              >
-                                {sug.urgency} PRIORITY
-                              </span>
+                              <h4 className="font-semibold text-sm text-[#162A22]">{sug.route_name}</h4>
                             </div>
+                            <span
+                              className={cn(
+                                'px-2.5 py-1 rounded-full text-[10px] font-semibold tracking-wide uppercase shrink-0',
+                                sug.urgency === 'HIGH'
+                                  ? 'bg-amber-100 text-amber-900 border border-amber-200'
+                                  : sug.urgency === 'MEDIUM'
+                                  ? 'bg-blue-50 text-blue-800 border border-blue-200'
+                                  : 'bg-[#F7F6F2] text-[#162A22] border border-black/[0.06]'
+                              )}
+                            >
+                              {sug.urgency} PRIORITY
+                            </span>
+                          </div>
 
-                            <div className="grid grid-cols-2 gap-3 p-3.5 rounded-xl bg-white border border-black/[0.04]">
-                              <div className="space-y-1">
-                                <span className="text-[11px] text-black/50">Passenger Load Factor</span>
-                                <div className="flex items-baseline gap-1.5">
-                                  <span className="text-base font-bold text-[#162A22]">{load.toFixed(1)}%</span>
-                                  <span className="text-[10px] text-black/40">capacity</span>
-                                </div>
-                                <div className="w-full h-1.5 rounded-full bg-[#F0F5F2] overflow-hidden mt-1">
-                                  <div
-                                    className={cn(
-                                      'h-full rounded-full transition-all duration-500',
-                                      load >= 75
-                                        ? 'bg-amber-500'
-                                        : load >= 50
-                                        ? 'bg-[#162A22]'
-                                        : 'bg-[#10B981]'
-                                    )}
-                                    style={{ width: `${Math.min(100, Math.max(10, load))}%` }}
-                                  />
-                                </div>
+                          <div className="grid grid-cols-2 gap-3 p-3.5 rounded-2xl bg-[#F7F6F2] border border-black/[0.04]">
+                            <div className="space-y-1">
+                              <span className="text-[11px] text-black/50">Passenger Load Factor</span>
+                              <div className="flex items-baseline gap-1.5">
+                                <span className="text-lg font-bold text-[#162A22]">{load.toFixed(1)}%</span>
+                                <span className="text-[10px] text-black/40">capacity</span>
                               </div>
-
-                              <div className="space-y-1">
-                                <span className="text-[11px] text-black/50">Headway Adjustment</span>
-                                <div className="flex items-center gap-1.5 text-xs font-semibold text-[#162A22]">
-                                  <span className="text-black/40 line-through">{currentH}m</span>
-                                  <ArrowRight className="size-3 text-chart-5" />
-                                  <span className="text-chart-5 font-bold text-base">{recommendedH}m</span>
-                                </div>
-                                <p className="text-[10px] text-black/50">
-                                  {sug.extra_buses_needed && sug.extra_buses_needed > 0
-                                    ? `+${sug.extra_buses_needed} vehicle dispatch required`
-                                    : 'Headway consolidation'}
-                                </p>
+                              <div className="w-full h-1.5 rounded-full bg-white overflow-hidden mt-1">
+                                <div
+                                  className={cn(
+                                    'h-full rounded-full transition-all duration-500',
+                                    load >= 75
+                                      ? 'bg-amber-500'
+                                      : load >= 50
+                                      ? 'bg-[#162A22]'
+                                      : 'bg-[#10B981]'
+                                  )}
+                                  style={{ width: `${Math.min(100, Math.max(10, load))}%` }}
+                                />
                               </div>
                             </div>
 
-                            <div className="space-y-1.5">
-                              <div className="flex items-center gap-1.5 text-[11px] text-black/50">
-                                <MapPin className="size-3 text-[#162A22]" />
-                                <span>Bottleneck Stop:</span>
-                                <span className="font-semibold text-[#162A22]">{bottleneck}</span>
+                            <div className="space-y-1">
+                              <span className="text-[11px] text-black/50">Recommended Headway</span>
+                              <div className="flex items-center gap-1.5 text-xs font-semibold text-[#162A22]">
+                                <span className="text-black/40 line-through">{currentH}m</span>
+                                <ArrowRight className="size-3 text-chart-5" />
+                                <span className="text-chart-5 font-bold text-base">{recommendedH}m</span>
                               </div>
-                              <p className="text-xs text-[#162A22]/90 leading-relaxed p-3 rounded-xl bg-white border border-black/[0.04]">
-                                {sug.optimization_reason || sug.recommendation}
+                              <p className="text-[10px] text-black/50">
+                                {sug.extra_buses_needed && sug.extra_buses_needed > 0
+                                  ? `+${sug.extra_buses_needed} vehicle dispatch required`
+                                  : 'Headway consolidation'}
                               </p>
                             </div>
+                          </div>
 
-                            <div className="pt-2 flex items-center justify-between gap-3">
-                              <span className="text-[11px] text-black/40">
-                                {isApplied ? 'Schedule synchronized.' : 'Ready to deploy.'}
-                              </span>
-                              {isApplied ? (
-                                <div className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-[#E6F4EA] text-[#162A22] border border-[#162A22]/20 text-xs font-medium shrink-0">
-                                  <CheckCircle2 className="size-3.5 text-[#10B981]" />
-                                  <span>Schedule active</span>
-                                </div>
-                              ) : (
-                                <button
-                                  type="button"
-                                  disabled={isApplying}
-                                  onClick={() => handleApplySchedule(sug)}
-                                  className="px-3.5 py-1.5 rounded-full bg-[#162A22] hover:bg-[#1E352B] text-white text-xs font-medium transition-all shadow-xs cursor-pointer disabled:opacity-50 inline-flex items-center gap-2 shrink-0"
-                                >
-                                  {isApplying ? (
-                                    <>
-                                      <RotateCcw className="size-3 animate-spin" />
-                                      <span>Applying…</span>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <span>Apply optimal schedule</span>
-                                      <ArrowRight className="size-3" />
-                                    </>
-                                  )}
-                                </button>
-                              )}
+                          <div className="space-y-1.5">
+                            <div className="flex items-center gap-1.5 text-[11px] text-black/50">
+                              <MapPin className="size-3 text-[#162A22]" />
+                              <span>Bottleneck Stop:</span>
+                              <span className="font-semibold text-[#162A22]">{bottleneck}</span>
                             </div>
+                            <p className="text-xs text-[#162A22]/90 leading-relaxed p-3.5 rounded-2xl bg-[#F7F6F2] border border-black/[0.04]">
+                              {sug.optimization_reason || sug.recommendation}
+                            </p>
                           </div>
-                        );
-                      })}
-                    </div>
-                  )}
+                        </div>
+
+                        <div className="pt-3 border-t border-black/[0.04] flex items-center justify-between gap-3">
+                          <span className="text-[11px] text-black/40">
+                            {isApplied ? 'Schedule synchronized.' : 'Ready to deploy.'}
+                          </span>
+                          {isApplied ? (
+                            <div className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full bg-[#E6F4EA] text-[#162A22] border border-[#162A22]/20 text-xs font-medium shrink-0">
+                              <CheckCircle2 className="size-3.5 text-[#10B981]" />
+                              <span>Schedule active</span>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              disabled={isApplying}
+                              onClick={() => handleApplySchedule(sug)}
+                              className="px-4 py-2 rounded-full bg-[#162A22] hover:bg-[#1E352B] text-white text-xs font-medium transition-all shadow-xs cursor-pointer disabled:opacity-50 inline-flex items-center gap-2 shrink-0"
+                            >
+                              {isApplying ? (
+                                <>
+                                  <RotateCcw className="size-3 animate-spin" />
+                                  <span>Applying schedule…</span>
+                                </>
+                              ) : (
+                                <>
+                                  <span>Apply optimal schedule</span>
+                                  <ArrowRight className="size-3" />
+                                </>
+                              )}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
-
-                <div className="lg:col-span-5 bg-white rounded-[26px] p-6 shadow-[0_14px_30px_-10px_rgba(0,0,0,0.04)] border border-black/[0.04] space-y-6">
-                  <div className="flex items-center justify-between pb-4 border-b border-black/[0.04]">
-                    <div className="flex items-center gap-3">
-                      <span className="grid size-10 place-items-center rounded-2xl bg-[#E6F4EA] text-[#162A22]">
-                        <FileCode2 className="size-5" />
-                      </span>
-                      <div>
-                        <h3 className="text-base font-semibold text-[#162A22]">Public API &amp; GTFS Feeds</h3>
-                        <p className="text-xs text-black/50">Open transit feeds, OpenAPI 3.0 docs, and webhooks</p>
-                      </div>
-                    </div>
-                    <span className="size-2.5 rounded-full bg-[#10B981] animate-pulse" />
-                  </div>
-
-                  <div className="space-y-2.5">
-                    <span className="text-[11px] font-semibold uppercase tracking-wider text-black/40">
-                      Standard Feeds &amp; Documentation
-                    </span>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                      <a
-                        href="http://localhost:8081/api/v1/gtfs-rt/vehicle-positions"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="p-3 rounded-xl border border-black/[0.06] bg-[#F7F6F2] hover:bg-neutral-100 transition-all group flex flex-col justify-between space-y-1.5 cursor-pointer"
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs font-semibold text-[#162A22] group-hover:text-chart-5 transition-colors">
-                            GTFS-RT Vehicles
-                          </span>
-                          <ArrowUpRight className="size-3 text-black/40 group-hover:text-chart-5" />
-                        </div>
-                        <span className="text-[10px] text-black/50">Coordinates, bearing, speed</span>
-                        <span className="text-[9px] font-medium text-[#162A22]/70 bg-white px-1.5 py-0.5 rounded border border-black/[0.06] w-fit">
-                          /gtfs-rt/vehicle-positions
-                        </span>
-                      </a>
-
-                      <a
-                        href="http://localhost:8081/api/v1/gtfs-rt/trip-updates"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="p-3 rounded-xl border border-black/[0.06] bg-[#F7F6F2] hover:bg-neutral-100 transition-all group flex flex-col justify-between space-y-1.5 cursor-pointer"
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs font-semibold text-[#162A22] group-hover:text-chart-5 transition-colors">
-                            GTFS-RT Trip Updates
-                          </span>
-                          <ArrowUpRight className="size-3 text-black/40 group-hover:text-chart-5" />
-                        </div>
-                        <span className="text-[10px] text-black/50">Corridor ETAs &amp; delays</span>
-                        <span className="text-[9px] font-medium text-[#162A22]/70 bg-white px-1.5 py-0.5 rounded border border-black/[0.06] w-fit">
-                          /gtfs-rt/trip-updates
-                        </span>
-                      </a>
-
-                      <a
-                        href="http://localhost:8081/api/v1/public/openapi.json"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="p-3 rounded-xl border border-black/[0.06] bg-[#F7F6F2] hover:bg-neutral-100 transition-all group flex flex-col justify-between space-y-1.5 cursor-pointer"
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs font-semibold text-[#162A22] group-hover:text-chart-5 transition-colors">
-                            OpenAPI 3.0 Spec
-                          </span>
-                          <ArrowUpRight className="size-3 text-black/40 group-hover:text-chart-5" />
-                        </div>
-                        <span className="text-[10px] text-black/50">Swagger JSON schema</span>
-                        <span className="text-[9px] font-medium text-[#162A22]/70 bg-white px-1.5 py-0.5 rounded border border-black/[0.06] w-fit">
-                          /public/openapi.json
-                        </span>
-                      </a>
-
-                      <a
-                        href="http://localhost:8081/api/v1/public/catalog"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="p-3 rounded-xl border border-black/[0.06] bg-[#F7F6F2] hover:bg-neutral-100 transition-all group flex flex-col justify-between space-y-1.5 cursor-pointer"
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs font-semibold text-[#162A22] group-hover:text-chart-5 transition-colors">
-                            Network Catalog
-                          </span>
-                          <ArrowUpRight className="size-3 text-black/40 group-hover:text-chart-5" />
-                        </div>
-                        <span className="text-[10px] text-black/50">Multi-tenant catalog</span>
-                        <span className="text-[9px] font-medium text-[#162A22]/70 bg-white px-1.5 py-0.5 rounded border border-black/[0.06] w-fit">
-                          /public/catalog
-                        </span>
-                      </a>
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl p-4 border border-black/[0.06] bg-[#F7F6F2] space-y-3">
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                      <div>
-                        <h5 className="font-semibold text-xs text-[#162A22]">Signed Webhook Dispatcher</h5>
-                        <p className="text-[11px] text-black/50">Dispatches HMAC-SHA256 signed event</p>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        {(['trip.arrived', 'seat.booked', 'schedule.optimized'] as const).map((ev) => (
-                          <button
-                            key={ev}
-                            type="button"
-                            onClick={() => setTestWebhookEvent(ev)}
-                            className={cn(
-                              'px-2 py-0.5 rounded-full text-[10px] font-medium transition-all cursor-pointer',
-                              testWebhookEvent === ev
-                                ? 'bg-[#162A22] text-white shadow-2xs'
-                                : 'bg-white text-[#162A22] border border-black/[0.06] hover:bg-neutral-50'
-                            )}
-                          >
-                            {ev}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div className="flex items-center justify-between gap-2 pt-1">
-                      <span className="text-[10px] text-black/50 font-medium">
-                        POST /api/v1/webhooks/test
-                      </span>
-                      <button
-                        type="button"
-                        disabled={isDispatchingWebhook}
-                        onClick={() => handleDispatchTestWebhook(testWebhookEvent)}
-                        className="px-3 py-1.5 rounded-full bg-[#162A22] hover:bg-[#1E352B] text-white text-xs font-medium transition-all shadow-xs cursor-pointer disabled:opacity-50 inline-flex items-center gap-1.5"
-                      >
-                        {isDispatchingWebhook ? (
-                          <>
-                            <RotateCcw className="size-3 animate-spin" />
-                            <span>Dispatching…</span>
-                          </>
-                        ) : (
-                          <>
-                            <Zap className="size-3" />
-                            <span>Trigger {testWebhookEvent}</span>
-                          </>
-                        )}
-                      </button>
-                    </div>
-
-                    {testWebhookResult && webhookDrawerOpen && (
-                      <div className="mt-3 p-3.5 rounded-xl bg-white border border-black/[0.06] space-y-2.5">
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-1.5">
-                            <span className="px-1.5 py-0.5 rounded-full bg-[#E6F4EA] text-[#162A22] text-[9px] font-bold">
-                              HTTP 200 OK
-                            </span>
-                            <span className="text-[11px] font-semibold text-[#162A22]">Signed Webhook Payload</span>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => setWebhookDrawerOpen(false)}
-                            className="text-[11px] text-black/40 hover:text-black cursor-pointer"
-                          >
-                            Dismiss
-                          </button>
-                        </div>
-
-                        <div className="space-y-1">
-                          <span className="text-[9px] uppercase font-semibold text-black/40 tracking-wider">
-                            X-NexTransit-Signature
-                          </span>
-                          <div className="p-1.5 rounded bg-[#F7F6F2] border border-black/[0.04] text-[10px] text-[#162A22] break-all select-all font-sans">
-                            {testWebhookResult.signature}
-                          </div>
-                        </div>
-
-                        <div className="space-y-1">
-                          <span className="text-[9px] uppercase font-semibold text-black/40 tracking-wider">
-                            Payload Preview
-                          </span>
-                          <pre className="p-2.5 rounded bg-[#F7F6F2] border border-black/[0.04] text-[10px] text-[#162A22] leading-relaxed max-h-36 overflow-y-auto whitespace-pre-wrap font-sans">
-                            {JSON.stringify(testWebhookResult.payload, null, 2)}
-                          </pre>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
+              )}
             </section>
           )}
 
