@@ -57,6 +57,11 @@ export interface Bus {
   detour_lat?: number;
   detour_lng?: number;
   bypassed_stop_sequences?: number[];
+  route_variant?: 'PRIMARY_ROUTE_1' | 'ALTERNATE_ROUTE_2' | string;
+  traffic_level?: 'NORMAL' | 'MODERATE' | 'HEAVY' | string;
+  delay_minutes?: number;
+  dwell_seconds?: number;
+  segment_progress?: number;
   created_at: string;
 }
 
@@ -144,6 +149,11 @@ export interface BusSnapshot {
   detour_extra_km?: number;
   detour_step_index?: number;
   detour_waypoints?: [number, number][];
+  route_variant?: 'PRIMARY_ROUTE_1' | 'ALTERNATE_ROUTE_2' | string;
+  traffic_level?: 'NORMAL' | 'MODERATE' | 'HEAVY' | string;
+  delay_minutes?: number;
+  dwell_seconds?: number;
+  segment_progress?: number;
 }
 
 export interface IngestTelemetryRequest {
@@ -185,6 +195,10 @@ export interface StopETA {
   detour_lng?: number;
   detour_delay_sec?: number;
   detour_extra_km?: number;
+  route_variant?: string;
+  traffic_level?: string;
+  delay_minutes?: number;
+  dwell_seconds?: number;
 }
 
 export interface TransitEvent {

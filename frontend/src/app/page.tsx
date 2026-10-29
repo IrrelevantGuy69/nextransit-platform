@@ -3927,7 +3927,7 @@ export default function Home() {
       } else {
         void handleSimulateStep();
       }
-    }, 2000);
+    }, 1800);
     return () => clearInterval(interval);
   }, [isSimulating, selectedRole, isDriverOffline, handleDriverEmitPing, handleSimulateStep]);
 
@@ -3973,6 +3973,36 @@ export default function Home() {
     return 0;
   }, [activeSnapshot, uniqueStops.length, stopETAs]);
 
+  const [smoothProgressPct, setSmoothProgressPct] = useState<number>(0);
+  const smoothProgressRef = useRef<number>(0);
+  const targetProgressRef = useRef<number>(0);
+
+  useEffect(() => {
+    targetProgressRef.current = progressPercent;
+  }, [progressPercent]);
+
+  useEffect(() => {
+    let animId: number;
+    let lastTime = performance.now();
+    const step = (time: number) => {
+      const dt = Math.min(100, time - lastTime);
+      lastTime = time;
+      const current = smoothProgressRef.current;
+      const target = targetProgressRef.current;
+      if (Math.abs(current - target) > 0.05) {
+        const next = current + (target - current) * Math.min(1, dt / 350);
+        smoothProgressRef.current = next;
+        setSmoothProgressPct(next);
+      } else if (current !== target) {
+        smoothProgressRef.current = target;
+        setSmoothProgressPct(target);
+      }
+      animId = requestAnimationFrame(step);
+    };
+    animId = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(animId);
+  }, []);
+
   const isAnyDetour = useMemo(() => {
     return snapshots.some((s) => s.is_detour) || buses.some((b) => b.is_detour);
   }, [snapshots, buses]);
@@ -4007,6 +4037,12 @@ export default function Home() {
   }, [riderStopETA]);
 
   const activeDetourDelayMinutes = useMemo(() => {
+    if (activeSnapshot?.delay_minutes !== undefined && activeSnapshot.delay_minutes > 0) {
+      return activeSnapshot.delay_minutes.toFixed(1);
+    }
+    if (riderStopETA?.delay_minutes !== undefined && riderStopETA.delay_minutes > 0) {
+      return riderStopETA.delay_minutes.toFixed(1);
+    }
     const delaySec = riderStopETA?.detour_delay_sec || activeSnapshot?.detour_delay_sec || 210;
     return (delaySec / 60).toFixed(1);
   }, [riderStopETA, activeSnapshot]);
@@ -5627,8 +5663,17 @@ export default function Home() {
                       <div className="p-4 rounded-2xl bg-muted/40 border border-foreground/5">
                         <div className="flex items-center justify-between">
                           <span className="text-xs text-muted-foreground block">Approaching vehicle</span>
-                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-[#162A22]/5 text-[#162A22] font-semibold truncate max-w-[130px]">
-                            {activeSnapshot?.model || 'Transit Fleet Coach'}
+                          <span
+                            className={cn(
+                              'text-[10px] px-2 py-0.5 rounded-full font-semibold truncate',
+                              (activeSnapshot?.route_variant === 'ALTERNATE_ROUTE_2' || riderStopETA?.route_variant === 'ALTERNATE_ROUTE_2')
+                                ? 'bg-[#FEF3C7] text-[#92400E] border border-[#F59E0B]/30'
+                                : 'bg-[#E6F4EA] text-[#162A22]',
+                            )}
+                          >
+                            {(activeSnapshot?.route_variant === 'ALTERNATE_ROUTE_2' || riderStopETA?.route_variant === 'ALTERNATE_ROUTE_2')
+                              ? 'Via Route 2 (Alternate Bypass)'
+                              : 'Via Route 1 (Primary)'}
                           </span>
                         </div>
                         <p className="mt-1 text-xl font-semibold font-sans text-primary">
@@ -5656,9 +5701,13 @@ export default function Home() {
                       <div className="p-4 rounded-2xl bg-muted/40 border border-foreground/5">
                         <div className="flex items-center justify-between">
                           <span className="text-xs text-muted-foreground block">Estimated arrival</span>
-                          {(activeSnapshot?.is_detour || riderStopETA?.is_detour) && (
+                          {(activeSnapshot?.route_variant === 'ALTERNATE_ROUTE_2' || (riderStopETA?.delay_minutes ?? 0) > 0 || (activeSnapshot?.delay_minutes ?? 0) > 0 || activeSnapshot?.is_detour) ? (
                             <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[#FEF3C7] text-[#92400E] border border-[#F59E0B]/30 font-semibold animate-pulse">
-                              +{activeDetourDelayMinutes}m detour
+                              +{(riderStopETA?.delay_minutes ?? activeSnapshot?.delay_minutes ?? 4.8).toFixed(1)}m delay
+                            </span>
+                          ) : (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[#E6F4EA] text-[#162A22] font-semibold">
+                              On time
                             </span>
                           )}
                         </div>
@@ -5666,9 +5715,12 @@ export default function Home() {
                           {riderCountdownFormatted}
                         </p>
                         <span className="text-[11px] text-muted-foreground mt-0.5 block truncate">
-                          {(activeSnapshot?.is_detour || riderStopETA?.is_detour)
-                            ? `Includes +${activeDetourDelayMinutes}m detour delay`
-                            : 'Live corridor tracking'}
+                          {(activeSnapshot?.route_variant === 'ALTERNATE_ROUTE_2' || (riderStopETA?.delay_minutes ?? 0) > 0 || (activeSnapshot?.delay_minutes ?? 0) > 0)
+                            ? `Includes +${(riderStopETA?.delay_minutes ?? activeSnapshot?.delay_minutes ?? 4.8).toFixed(1)} min traffic delay · Route 2`
+                            : 'On time · Live corridor tracking'}
+                        </span>
+                        <span className="text-[10px] text-[#162A22] font-medium mt-1 block truncate bg-[#E6F4EA] px-2 py-0.5 rounded-md">
+                          ~3 min walk to stop · Leave in {Math.max(1, Math.round((riderStopETA?.eta_minutes ?? 8) - 3))} min
                         </span>
                       </div>
 
@@ -6117,20 +6169,6 @@ export default function Home() {
 
                       <button
                         type="button"
-                        onClick={handleToggleDetour}
-                        className={cn(
-                          'font-sans text-xs font-medium px-3.5 py-2 rounded-full shadow-sm flex items-center gap-1.5 transition-all cursor-pointer border',
-                          isAnyDetour
-                            ? 'bg-amber-600 hover:bg-amber-700 text-white border-amber-700 animate-pulse'
-                            : 'bg-white hover:bg-[#F0F5F2] text-[#162A22] border-black/[0.06]',
-                        )}
-                      >
-                        <TriangleAlert className={cn('size-3', isAnyDetour ? 'text-amber-200' : 'text-amber-600')} />
-                        <span>{isAnyDetour ? `Detour active (+${activeDetourDelayMinutes}m) · Clear` : 'Traffic detour'}</span>
-                      </button>
-
-                      <button
-                        type="button"
                         onClick={handleSimulateStep}
                         title="Manual step"
                         className="bg-white hover:bg-[#F0F5F2] text-[#162A22] rounded-full p-2 shadow-sm border border-black/[0.06] transition-colors cursor-pointer inline-flex items-center justify-center"
@@ -6365,7 +6403,28 @@ export default function Home() {
                     <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
                       <div className="lg:col-span-8 space-y-4">
                         <div className="rounded-[28px] bg-[#162A22] text-[#F4F3EE] p-8 shadow-[0_24px_48px_-12px_rgba(22,42,34,0.28)] -translate-y-1 hover:-translate-y-2 transition-all duration-300 ease-out">
-                          <div className="flex justify-end">
+                          <div className="flex items-center justify-between gap-3 flex-wrap">
+                            {activeSnapshot?.route_variant === 'ALTERNATE_ROUTE_2' ? (
+                              <div className="inline-flex items-center gap-2 flex-wrap">
+                                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#FEF3C7] text-[#92400E] font-sans text-xs font-semibold shadow-xs">
+                                  <span className="size-2 rounded-full bg-[#D97706] animate-pulse" />
+                                  Route 2 · Alternate Traffic Alignment
+                                </span>
+                                <span className="font-sans text-xs text-[#FDE68A]">
+                                  Delayed +{(activeSnapshot.delay_minutes || 4.8).toFixed(1)} min · Heavy traffic on Route 1
+                                </span>
+                              </div>
+                            ) : (
+                              <div className="inline-flex items-center gap-2 flex-wrap">
+                                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#E6F4EA] text-[#162A22] font-sans text-xs font-semibold shadow-xs">
+                                  <span className="size-2 rounded-full bg-[#10B981]" />
+                                  Route 1 · Primary Alignment
+                                </span>
+                                <span className="font-sans text-xs text-[#A7C4B5]">
+                                  On schedule · Normal flow
+                                </span>
+                              </div>
+                            )}
                             <div className="inline-flex items-center gap-1.5 font-sans text-xs font-medium text-[#A7C4B5]">
                               <Clock className="size-3.5 text-[#A7C4B5]" />
                               <span>ETA ~{activeRoute.estimated_minutes} min</span>
@@ -6390,12 +6449,12 @@ export default function Home() {
 
                           <div className="h-1.5 bg-white/15 rounded-full my-8 relative w-full">
                             <div
-                              className="h-full rounded-full bg-[#6EE7B7] transition-all duration-700 ease-out"
-                              style={{ width: `${progressPercent}%` }}
+                              className="h-full rounded-full bg-[#6EE7B7]"
+                              style={{ width: `${Math.min(100, Math.max(0, smoothProgressPct)).toFixed(2)}%` }}
                             />
                             <div
-                              className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center justify-center w-10 h-10 rounded-full bg-[#E6F4EA] text-[#162A22] shadow-md transition-all duration-700 ease-out"
-                              style={{ left: `${progressPercent}%` }}
+                              className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center justify-center w-10 h-10 rounded-full bg-[#E6F4EA] text-[#162A22] shadow-md"
+                              style={{ left: `${Math.min(100, Math.max(0, smoothProgressPct)).toFixed(2)}%` }}
                             >
                               <Bus className="size-4" />
                             </div>
@@ -6406,11 +6465,11 @@ export default function Home() {
                               const etaMatch = stopETAs.find((e) => e.stop_id === stop.id || e.stop_code === stop.code);
                               const totalStops = Math.min(4, uniqueStops.length);
                               const stopTargetPct = totalStops > 1 ? (idx / (totalStops - 1)) * 100 : 0;
-                              const isDone = progressPercent > stopTargetPct + 8;
-                              const isArriving = !isDone && Math.abs(progressPercent - stopTargetPct) <= 12;
+                              const isDone = smoothProgressPct > stopTargetPct + 8;
+                              const isArriving = !isDone && Math.abs(smoothProgressPct - stopTargetPct) <= 12;
                               const etaMin = etaMatch
                                 ? etaMatch.eta_minutes
-                                : Math.max(0, (idx + 1) * 6 - Math.round(progressPercent * 0.24));
+                                : Math.max(0, (idx + 1) * 6 - Math.round(smoothProgressPct * 0.24));
                               const statusText = isDone
                                 ? 'Passed'
                                 : isArriving
@@ -6448,19 +6507,35 @@ export default function Home() {
                               <div className="w-11 h-11 rounded-2xl bg-[#E6F4EA] text-[#162A22] flex items-center justify-center shrink-0">
                                 <Bus className="size-5" />
                               </div>
-                              <div>
-                                <h4 className="font-sans font-semibold text-sm text-[#162A22]">
-                                  {activeSnapshot?.model || 'Transit Fleet Bus'}
-                                </h4>
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center justify-between gap-2">
+                                  <h4 className="font-sans font-semibold text-sm text-[#162A22] truncate">
+                                    {activeSnapshot?.model || 'Transit Fleet Bus'}
+                                  </h4>
+                                  {activeSnapshot?.route_variant === 'ALTERNATE_ROUTE_2' ? (
+                                    <span className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-[#FEF3C7] text-[#92400E] border border-[#F59E0B]/30 whitespace-nowrap">
+                                      Route 2 · Alternate Traffic Alignment
+                                    </span>
+                                  ) : (
+                                    <span className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-[#E6F4EA] text-[#162A22] whitespace-nowrap">
+                                      Route 1 · Primary Alignment
+                                    </span>
+                                  )}
+                                </div>
                                 <div className="flex items-center gap-1.5 mt-0.5">
-                                  <span className="w-2 h-2 rounded-full bg-[#10B981] animate-pulse" />
-                                  <span className="font-sans text-xs text-black/50">
+                                  <span
+                                    className={cn(
+                                      'w-2 h-2 rounded-full',
+                                      activeSnapshot?.route_variant === 'ALTERNATE_ROUTE_2'
+                                        ? 'bg-[#D97706] animate-pulse'
+                                        : 'bg-[#10B981]',
+                                    )}
+                                  />
+                                  <span className="font-sans text-xs text-black/50 truncate block">
                                     {activeSnapshot?.fleet_code || activeRoute.code} ·{' '}
-                                    {activeSnapshot?.trip_status === 'JOURNEY_ENDED'
-                                      ? 'At terminal'
-                                      : activeSnapshot?.trip_status === 'AT_STOP'
-                                      ? 'Boarding passengers'
-                                      : 'Active service'}
+                                    {activeSnapshot?.route_variant === 'ALTERNATE_ROUTE_2'
+                                      ? `Delayed +${(activeSnapshot.delay_minutes || 4.8).toFixed(1)} min · Heavy traffic on Route 1`
+                                      : 'On schedule · Normal flow'}
                                   </span>
                                 </div>
                               </div>
@@ -6539,7 +6614,18 @@ export default function Home() {
                             </div>
                             <p className="text-xs text-black/50 mt-0.5">Historical segment ETA · 96.4% on-time</p>
                           </div>
-                          <span className="text-xs font-sans text-black/50">{uniqueStopETAs.length} stops</span>
+                          <div className="text-right">
+                            <span className="text-xs font-sans text-black/50 block">{uniqueStopETAs.length} stops</span>
+                            {activeSnapshot?.route_variant === 'ALTERNATE_ROUTE_2' ? (
+                              <span className="inline-block mt-0.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-[#FEF3C7] text-[#92400E] border border-[#F59E0B]/30">
+                                Route 2 · Delayed +{(activeSnapshot.delay_minutes || 4.8).toFixed(1)}m
+                              </span>
+                            ) : (
+                              <span className="inline-block mt-0.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-[#E6F4EA] text-[#162A22]">
+                                Route 1 · On schedule
+                              </span>
+                            )}
+                          </div>
                         </div>
                         <div className="space-y-2.5 max-h-[480px] overflow-y-auto pr-1">
                           {isAnyDetour && (
@@ -6561,6 +6647,7 @@ export default function Home() {
                             uniqueStopETAs.map((eta, idx) => {
                               const isBypassed = eta.bypassed || eta.status === 'BYPASSED_DETOUR';
                               const status = isBypassed ? 'BYPASSED_DETOUR' : (eta.status || (eta.eta_minutes <= 1 ? 'ARRIVING_NOW' : 'UPCOMING'));
+                              const isRoute2 = eta.route_variant === 'ALTERNATE_ROUTE_2' || activeSnapshot?.route_variant === 'ALTERNATE_ROUTE_2';
                               return (
                                 <div
                                   key={`${eta.route_id}-${eta.stop_id}-${idx}`}
@@ -6575,7 +6662,10 @@ export default function Home() {
                                         <h4 className="text-xs font-semibold text-[#162A22] font-sans">{eta.stop_name}</h4>
                                       </div>
                                       <p className="text-[11px] font-sans text-black/50 mt-0.5 ml-6">
-                                        {eta.stop_code} · {eta.fleet_code || 'En route'}
+                                        {eta.stop_code} · {eta.fleet_code || 'En route'} ·{' '}
+                                        <span className={isRoute2 ? 'text-[#B45309] font-medium' : 'text-[#162A22] font-medium'}>
+                                          {isRoute2 ? 'Route 2 (Alternate)' : 'Route 1 (Primary)'}
+                                        </span>
                                       </p>
                                     </div>
                                     <span
@@ -6600,8 +6690,8 @@ export default function Home() {
                                       {!isBypassed && status === 'ARRIVED' && 'At stop'}
                                       {!isBypassed && status === 'ARRIVING_NOW' && 'Arriving now'}
                                       {!isBypassed && status === 'UPCOMING' && (
-                                        eta.is_detour
-                                          ? `~${eta.eta_minutes} min (+${(((eta.detour_delay_sec || activeSnapshot?.detour_delay_sec || 210) / 60)).toFixed(1)}m detour)`
+                                        isRoute2 || (eta.delay_minutes && eta.delay_minutes > 0)
+                                          ? `~${eta.eta_minutes} min (+${((eta.delay_minutes || activeSnapshot?.delay_minutes || 4.8)).toFixed(1)}m delay)`
                                           : `~${eta.eta_minutes} min`
                                       )}
                                     </span>

@@ -479,31 +479,48 @@ export default function FleetSpatialMap({
 
         {showRoutes &&
           (snapshots || [])
-            .filter((b) => b && b.is_detour && b.detour_lat && b.detour_lng)
+            .filter((b) => b && (b.route_variant === 'ALTERNATE_ROUTE_2' || b.is_detour))
             .map((bus) => {
-              const detourCoords = (bus.detour_waypoints && bus.detour_waypoints.length > 0)
-                ? bus.detour_waypoints
-                : (bus.detour_geometry && bus.detour_geometry.length > 0)
-                ? bus.detour_geometry
-                : null;
+              const matchedRoute = multiRoutePaths.find((r) => r.route.id === bus.route_id) || multiRoutePaths[0];
+              const routeStops = matchedRoute?.stops || [];
+              const alternatePoints: LatLngTuple[] = [];
+              if (routeStops.length >= 2) {
+                for (let i = 0; i < routeStops.length - 1; i++) {
+                  const s1 = routeStops[i];
+                  const s2 = routeStops[i + 1];
+                  alternatePoints.push([s1.latitude, s1.longitude]);
+                  const dLat = s2.latitude - s1.latitude;
+                  const dLng = s2.longitude - s1.longitude;
+                  const len = Math.hypot(dLat, dLng);
+                  if (len > 0.0001) {
+                    const uLat = -dLng / len;
+                    const uLng = dLat / len;
+                    const offset = 0.0035;
+                    alternatePoints.push([
+                      (s1.latitude + s2.latitude) / 2 + uLat * offset,
+                      (s1.longitude + s2.longitude) / 2 + uLng * offset,
+                    ]);
+                  }
+                }
+                const lastStop = routeStops[routeStops.length - 1];
+                alternatePoints.push([lastStop.latitude, lastStop.longitude]);
+              }
+              const alternateSpline = getSplinePoints(
+                alternatePoints.length > 2
+                  ? alternatePoints
+                  : [
+                      [bus.latitude, bus.longitude],
+                      [bus.latitude + 0.003, bus.longitude + 0.003],
+                    ],
+              );
+              const delayDisplay = (bus.delay_minutes ?? ((bus.detour_delay_sec || 210) / 60)).toFixed(1);
+              const midWaypoint =
+                alternateSpline[Math.floor(alternateSpline.length / 2)] || [bus.latitude, bus.longitude];
 
-              const detourPath: LatLngTuple[] = detourCoords
-                ? detourCoords.map((pt) => {
-                    const lat = Math.abs(pt[0]) > 50 ? pt[1] : pt[0];
-                    const lng = Math.abs(pt[0]) > 50 ? pt[0] : pt[1];
-                    return [lat, lng] as LatLngTuple;
-                  })
-                : getSplinePoints([
-                    [bus.latitude, bus.longitude],
-                    [bus.detour_lat!, bus.detour_lng!],
-                    [bus.detour_lat! + 0.003, bus.detour_lng! + 0.003],
-                  ]);
-
-              const detourDelayDisplay = (((bus.detour_delay_sec || 210) / 60)).toFixed(1);
               return (
-                <React.Fragment key={`bus-detour-${bus.bus_id}`}>
+                <React.Fragment key={`bus-route2-${bus.bus_id}`}>
                   <Polyline
-                    positions={detourPath}
+                    positions={alternateSpline}
                     pathOptions={{
                       color: '#D97706',
                       weight: 4,
@@ -515,7 +532,7 @@ export default function FleetSpatialMap({
                     interactive={false}
                   />
                   <CircleMarker
-                    center={[bus.detour_lat!, bus.detour_lng!]}
+                    center={midWaypoint}
                     radius={6}
                     pathOptions={{
                       color: '#D97706',
@@ -524,10 +541,10 @@ export default function FleetSpatialMap({
                       weight: 2,
                     }}
                   >
-                    <Tooltip direction="top" offset={[0, -6]}>
+                    <Tooltip direction="top" offset={[0, -6]} permanent>
                       <div className="text-center font-sans">
-                        <p className="font-semibold text-xs leading-tight text-amber-900">Detour Waypoint</p>
-                        <p className="text-[10px] text-amber-700 font-medium">+{detourDelayDisplay} min traffic bypass</p>
+                        <p className="font-semibold text-xs leading-tight text-amber-900">Route 2 · Alternate Path</p>
+                        <p className="text-[10px] text-amber-700 font-medium">+{delayDisplay} min delay</p>
                       </div>
                     </Tooltip>
                   </CircleMarker>
@@ -696,9 +713,41 @@ interface BusMarkerNodeProps {
 
 function BusMarkerNode({ node, selected, onSelect }: BusMarkerNodeProps) {
   const { bus, displayLat, displayLng, labelPositionClass, routeColor } = node;
+  const markerRef = React.useRef<L.Marker | null>(null);
+  const currentPos = React.useRef<[number, number]>([displayLat, displayLng]);
+  const prevPos = React.useRef<[number, number]>([displayLat, displayLng]);
+  const targetPos = React.useRef<[number, number]>([displayLat, displayLng]);
+  const startTime = React.useRef<number>(performance.now());
+
+  React.useEffect(() => {
+    prevPos.current = currentPos.current;
+    targetPos.current = [displayLat, displayLng];
+    startTime.current = performance.now();
+  }, [displayLat, displayLng]);
+
+  React.useEffect(() => {
+    let animId: number;
+    const animate = () => {
+      const now = performance.now();
+      const elapsed = now - startTime.current;
+      const t = Math.min(1.0, Math.max(0.0, elapsed / 1800));
+      const lat = prevPos.current[0] + (targetPos.current[0] - prevPos.current[0]) * t;
+      const lng = prevPos.current[1] + (targetPos.current[1] - prevPos.current[1]) * t;
+      currentPos.current = [lat, lng];
+      if (markerRef.current) {
+        markerRef.current.setLatLng([lat, lng]);
+      }
+      if (t < 1.0) {
+        animId = requestAnimationFrame(animate);
+      }
+    };
+    animId = requestAnimationFrame(animate);
+    return () => cancelAnimationFrame(animId);
+  }, [displayLat, displayLng]);
+
   const isCompleted =
     bus.bus_status === 'COMPLETED' || bus.trip_status === 'JOURNEY_ENDED';
-  const isDelayed = bus.speed_kmh < 15 && !isCompleted;
+  const isDelayed = (bus.delay_minutes !== undefined && bus.delay_minutes > 0) || (bus.speed_kmh < 15 && !isCompleted);
   const roundedHeading = Math.round((bus.heading_deg ?? 0) / 15) * 15;
 
   const markerIcon = useMemo(() => {
@@ -727,6 +776,7 @@ function BusMarkerNode({ node, selected, onSelect }: BusMarkerNodeProps) {
 
   return (
     <Marker
+      ref={markerRef}
       position={[displayLat, displayLng]}
       icon={markerIcon}
       zIndexOffset={selected ? 1000 : isCompleted ? -100 : 100}
@@ -778,14 +828,6 @@ function FocusController({
 
   useEffect(() => {
     map.invalidateSize();
-    if (activeSnapshot && typeof activeSnapshot.latitude === 'number' && typeof activeSnapshot.longitude === 'number' && !isNaN(activeSnapshot.latitude) && !isNaN(activeSnapshot.longitude)) {
-      map.panTo([activeSnapshot.latitude, activeSnapshot.longitude], {
-        animate: true,
-        duration: 0.6,
-      });
-      return;
-    }
-
     if (routePath && routePath.length > 0) {
       const validPoints = routePath.filter(
         (p) => Array.isArray(p) && typeof p[0] === 'number' && typeof p[1] === 'number' && !isNaN(p[0]) && !isNaN(p[1]),
@@ -803,7 +845,7 @@ function FocusController({
     if (center && typeof center[0] === 'number' && typeof center[1] === 'number' && !isNaN(center[0]) && !isNaN(center[1])) {
       map.setView(center, 14, { animate: true });
     }
-  }, [focusKey, map, center, routePath, activeSnapshot]);
+  }, [focusKey, map, center, routePath]);
 
   return null;
 }
