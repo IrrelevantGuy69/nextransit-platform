@@ -56,9 +56,9 @@ const UNIVERSITY_DEMOS: UniversityDemoGroup[] = [
     universityName: 'Universiti Malaya Shuttle',
     location: 'Kuala Lumpur, Malaysia',
     accounts: [
-      { roleLabel: 'Operator Admin', role: 'OPERATOR_ADMIN', email: 'admin@um.edu.my', password: 'UM@Admin2026' },
-      { roleLabel: 'Transit Driver', role: 'DRIVER', email: 'driver@um.edu.my', password: 'UM@Driver2026' },
-      { roleLabel: 'Student Rider', role: 'RIDER', email: 'rider@um.edu.my', password: 'UM@Student2026' },
+      { roleLabel: 'Operator Admin', role: 'OPERATOR_ADMIN', email: 'admin@um.edu.my', password: 'Password123!' },
+      { roleLabel: 'Transit Driver', role: 'DRIVER', email: 'driver@um.edu.my', password: 'Password123!' },
+      { roleLabel: 'Student Rider', role: 'RIDER', email: 'rider@um.edu.my', password: 'Password123!' },
     ],
   },
   {
@@ -66,9 +66,9 @@ const UNIVERSITY_DEMOS: UniversityDemoGroup[] = [
     universityName: 'NUS Campus Shuttle',
     location: 'Singapore',
     accounts: [
-      { roleLabel: 'Operator Admin', role: 'OPERATOR_ADMIN', email: 'admin@nus.edu.sg', password: 'NUS@Admin2026' },
-      { roleLabel: 'Transit Driver', role: 'DRIVER', email: 'driver@nus.edu.sg', password: 'NUS@Driver2026' },
-      { roleLabel: 'Student Rider', role: 'RIDER', email: 'rider@nus.edu.sg', password: 'NUS@Student2026' },
+      { roleLabel: 'Operator Admin', role: 'OPERATOR_ADMIN', email: 'admin@nus.edu.sg', password: 'Password123!' },
+      { roleLabel: 'Transit Driver', role: 'DRIVER', email: 'driver@nus.edu.sg', password: 'Password123!' },
+      { roleLabel: 'Student Rider', role: 'RIDER', email: 'rider@nus.edu.sg', password: 'Password123!' },
     ],
   },
   {
@@ -76,9 +76,9 @@ const UNIVERSITY_DEMOS: UniversityDemoGroup[] = [
     universityName: 'UTokyo Campus Transit',
     location: 'Tokyo, Japan',
     accounts: [
-      { roleLabel: 'Operator Admin', role: 'OPERATOR_ADMIN', email: 'admin@u-tokyo.ac.jp', password: 'UTK@Admin2026' },
-      { roleLabel: 'Transit Driver', role: 'DRIVER', email: 'driver@u-tokyo.ac.jp', password: 'UTK@Driver2026' },
-      { roleLabel: 'Student Rider', role: 'RIDER', email: 'rider@u-tokyo.ac.jp', password: 'UTK@Student2026' },
+      { roleLabel: 'Operator Admin', role: 'OPERATOR_ADMIN', email: 'admin@u-tokyo.ac.jp', password: 'Password123!' },
+      { roleLabel: 'Transit Driver', role: 'DRIVER', email: 'driver@u-tokyo.ac.jp', password: 'Password123!' },
+      { roleLabel: 'Student Rider', role: 'RIDER', email: 'rider@u-tokyo.ac.jp', password: 'Password123!' },
     ],
   },
   {
@@ -86,9 +86,9 @@ const UNIVERSITY_DEMOS: UniversityDemoGroup[] = [
     universityName: 'IIT Delhi Campus Transit',
     location: 'New Delhi, India',
     accounts: [
-      { roleLabel: 'Operator Admin', role: 'OPERATOR_ADMIN', email: 'admin@iitd.ac.in', password: 'IITD@Admin2026' },
-      { roleLabel: 'Transit Driver', role: 'DRIVER', email: 'driver@iitd.ac.in', password: 'IITD@Driver2026' },
-      { roleLabel: 'Student Rider', role: 'RIDER', email: 'rider@iitd.ac.in', password: 'IITD@Student2026' },
+      { roleLabel: 'Operator Admin', role: 'OPERATOR_ADMIN', email: 'admin@iitd.ac.in', password: 'Password123!' },
+      { roleLabel: 'Transit Driver', role: 'DRIVER', email: 'driver@iitd.ac.in', password: 'Password123!' },
+      { roleLabel: 'Student Rider', role: 'RIDER', email: 'rider@iitd.ac.in', password: 'Password123!' },
     ],
   },
   {
@@ -96,9 +96,9 @@ const UNIVERSITY_DEMOS: UniversityDemoGroup[] = [
     universityName: 'IISc Bangalore Green Shuttle',
     location: 'Bengaluru, India',
     accounts: [
-      { roleLabel: 'Operator Admin', role: 'OPERATOR_ADMIN', email: 'admin@iisc.ac.in', password: 'IISC@Admin2026' },
-      { roleLabel: 'Transit Driver', role: 'DRIVER', email: 'driver@iisc.ac.in', password: 'IISC@Driver2026' },
-      { roleLabel: 'Student Rider', role: 'RIDER', email: 'rider@iisc.ac.in', password: 'IISC@Student2026' },
+      { roleLabel: 'Operator Admin', role: 'OPERATOR_ADMIN', email: 'admin@iisc.ac.in', password: 'Password123!' },
+      { roleLabel: 'Transit Driver', role: 'DRIVER', email: 'driver@iisc.ac.in', password: 'Password123!' },
+      { roleLabel: 'Student Rider', role: 'RIDER', email: 'rider@iisc.ac.in', password: 'Password123!' },
     ],
   },
   {
@@ -106,9 +106,9 @@ const UNIVERSITY_DEMOS: UniversityDemoGroup[] = [
     universityName: 'Apex Tech Park Express',
     location: 'Cyberjaya, Malaysia',
     accounts: [
-      { roleLabel: 'Operator Admin', role: 'OPERATOR_ADMIN', email: 'admin@apextech.my', password: 'Apex@Admin2026' },
-      { roleLabel: 'Fleet Captain', role: 'DRIVER', email: 'driver@apextech.my', password: 'Apex@Driver2026' },
-      { roleLabel: 'Employee Rider', role: 'RIDER', email: 'rider@apextech.my', password: 'Apex@Rider2026' },
+      { roleLabel: 'Operator Admin', role: 'OPERATOR_ADMIN', email: 'admin@apextech.my', password: 'Password123!' },
+      { roleLabel: 'Fleet Captain', role: 'DRIVER', email: 'driver@apextech.my', password: 'Password123!' },
+      { roleLabel: 'Employee Rider', role: 'RIDER', email: 'rider@apextech.my', password: 'Password123!' },
     ],
   },
   {
@@ -116,9 +116,9 @@ const UNIVERSITY_DEMOS: UniversityDemoGroup[] = [
     universityName: 'Himalayan Alpine Charter',
     location: 'Manali Express, India',
     accounts: [
-      { roleLabel: 'Operator Admin', role: 'OPERATOR_ADMIN', email: 'admin@alpinecharter.in', password: 'HAC@Admin2026' },
-      { roleLabel: 'Alpine Captain', role: 'DRIVER', email: 'driver@alpinecharter.in', password: 'HAC@Driver2026' },
-      { roleLabel: 'Charter Guest', role: 'RIDER', email: 'rider@alpinecharter.in', password: 'HAC@Rider2026' },
+      { roleLabel: 'Operator Admin', role: 'OPERATOR_ADMIN', email: 'admin@alpinecharter.in', password: 'Password123!' },
+      { roleLabel: 'Alpine Captain', role: 'DRIVER', email: 'driver@alpinecharter.in', password: 'Password123!' },
+      { roleLabel: 'Charter Guest', role: 'RIDER', email: 'rider@alpinecharter.in', password: 'Password123!' },
     ],
   },
 ];
@@ -133,7 +133,7 @@ export function AuthScreen({ tenants, api, onAuthSuccess }: AuthScreenProps) {
   const [isSignUp, setIsSignUp] = useState<boolean>(false);
   const [selectedDemoUni, setSelectedDemoUni] = useState<string>(UNIVERSITY_DEMOS[0].tenantId);
   const [email, setEmail] = useState<string>('admin@um.edu.my');
-  const [password, setPassword] = useState<string>('UM@Admin2026');
+  const [password, setPassword] = useState<string>('Password123!');
   const [fullName, setFullName] = useState<string>('');
   const [tenantId, setTenantId] = useState<string>(UNIVERSITY_DEMOS[0].tenantId);
   const [role, setRole] = useState<UserRole>('OPERATOR_ADMIN');

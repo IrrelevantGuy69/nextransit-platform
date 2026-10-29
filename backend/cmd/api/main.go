@@ -542,9 +542,11 @@ type SignUpRequest struct {
 }
 
 type LoginRequest struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
-	TenantID string `json:"tenant_id,omitempty"`
+	Email         string `json:"email"`
+	Password      string `json:"password"`
+	TenantID      string `json:"tenant_id,omitempty"`
+	TenantSlug    string `json:"tenant_slug,omitempty"`
+	WorkspaceSlug string `json:"workspace_slug,omitempty"`
 }
 
 type AuthUser struct {
@@ -1070,22 +1072,57 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	rawTenant := strings.TrimSpace(req.TenantID)
+	if rawTenant == "" {
+		rawTenant = strings.TrimSpace(req.TenantSlug)
+	}
+	if rawTenant == "" {
+		rawTenant = strings.TrimSpace(req.WorkspaceSlug)
+	}
+
+	var targetTenantID string
+	if rawTenant != "" {
+		if _, err := uuid.Parse(rawTenant); err == nil {
+			targetTenantID = rawTenant
+		} else {
+			_ = db.WithTenantTx(r.Context(), s.pool.Pool, "SUPER_ADMIN", func(tx pgx.Tx) error {
+				return tx.QueryRow(r.Context(), `
+					SELECT id::text
+					FROM tenants
+					WHERE LOWER(slug) = LOWER($1)
+					   OR LOWER(slug) LIKE LOWER($1) || '%'
+					   OR LOWER(name) LIKE '%' || LOWER($1) || '%'
+					ORDER BY created_at ASC
+					LIMIT 1`, rawTenant).Scan(&targetTenantID)
+			})
+		}
+	}
+
 	var user AuthUser
 	var passwordHash string
 
-	tenantContext := req.TenantID
-	if tenantContext == "" {
-		tenantContext = "SUPER_ADMIN"
-	}
-
-	err := db.WithTenantTx(r.Context(), s.pool.Pool, tenantContext, func(tx pgx.Tx) error {
-		query := `
-			SELECT id, tenant_id, email, role, COALESCE(full_name, 'Fleet Member'), COALESCE(password_hash, ''), created_at
-			FROM users
-			WHERE LOWER(email) = LOWER($1)
-			ORDER BY created_at ASC
-			LIMIT 1`
-		return tx.QueryRow(r.Context(), query, req.Email).Scan(
+	err := db.WithTenantTx(r.Context(), s.pool.Pool, "SUPER_ADMIN", func(tx pgx.Tx) error {
+		var query string
+		var args []interface{}
+		if targetTenantID != "" {
+			query = `
+				SELECT id, tenant_id, email, role, COALESCE(full_name, 'Fleet Member'), COALESCE(password_hash, ''), created_at
+				FROM users
+				WHERE LOWER(email) = LOWER($1)
+				  AND tenant_id = $2::uuid
+				ORDER BY created_at ASC
+				LIMIT 1`
+			args = []interface{}{req.Email, targetTenantID}
+		} else {
+			query = `
+				SELECT id, tenant_id, email, role, COALESCE(full_name, 'Fleet Member'), COALESCE(password_hash, ''), created_at
+				FROM users
+				WHERE LOWER(email) = LOWER($1)
+				ORDER BY created_at ASC
+				LIMIT 1`
+			args = []interface{}{req.Email}
+		}
+		return tx.QueryRow(r.Context(), query, args...).Scan(
 			&user.ID,
 			&user.TenantID,
 			&user.Email,
@@ -1097,22 +1134,26 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	})
 
 	if err != nil {
+		log.Printf("[AUTH] Login failed for email=%s tenant=%s: %v", req.Email, rawTenant, err)
 		respondError(w, http.StatusUnauthorized, "invalid email or password")
 		return
 	}
 
 	if passwordHash == "" {
+		log.Printf("[AUTH] User %s has empty password_hash", req.Email)
 		respondError(w, http.StatusUnauthorized, "account has no password configured; use dev-token")
 		return
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(req.Password)); err != nil {
+		log.Printf("[AUTH] Password mismatch for %s: %v", req.Email, err)
 		respondError(w, http.StatusUnauthorized, "invalid email or password")
 		return
 	}
 
-	if req.TenantID != "" && req.TenantID != user.TenantID {
-		respondError(w, http.StatusForbidden, "Access denied: This account belongs to another university workspace.")
+	if targetTenantID != "" && targetTenantID != user.TenantID {
+		log.Printf("[AUTH] Tenant mismatch for user %s: expected %s got %s", user.Email, targetTenantID, user.TenantID)
+		respondError(w, http.StatusForbidden, "Access denied: This account belongs to another workspace.")
 		return
 	}
 
@@ -5134,12 +5175,18 @@ func (s *Server) seedMultiSectorWorkspaces(ctx context.Context) error {
 			('77777777-7777-7777-7777-777777777777', 'Himalayan Alpine Charter', 'himalayan-alpine', 'ACTIVE', 'PRIVATE_CHARTER')
 		ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, slug = EXCLUDED.slug, status = EXCLUDED.status, sector_type = EXCLUDED.sector_type`,
 		`INSERT INTO users (id, tenant_id, email, role, full_name, password_hash) VALUES
-			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', 'admin@apextech.com', 'OPERATOR_ADMIN', 'Priya Nair (Corporate Transit Manager)', '$2a$10$8D8pRvo6lxhZoJbQse51eOi6ykZwVQtoUPqblPgT3InSUyeZHZx3m'),
-			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', 'driver@apextech.com', 'DRIVER', 'David Chen (Executive Fleet Captain)', '$2a$10$6rt1FZ9Krlw6c6WXbEGRg.wG.0As9/gKCb6r3znyJq0aWjXFHz6AW'),
-			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', 'employee@apextech.com', 'RIDER', 'Marcus Vance (Staff Systems Engineer)', '$2a$10$iaTcz7YGeZ3atHmJ0zouDOi2cag/ELuNuySd/eILBLZdi1./5H/7u'),
-			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', 'admin@himalayancharter.com', 'OPERATOR_ADMIN', 'Tenzing Norbu (Expedition Operations Chief)', '$2a$10$8D8pRvo6lxhZoJbQse51eOi6ykZwVQtoUPqblPgT3InSUyeZHZx3m'),
-			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', 'driver@himalayancharter.com', 'DRIVER', 'Dorje Lama (Master Alpine Driver)', '$2a$10$6rt1FZ9Krlw6c6WXbEGRg.wG.0As9/gKCb6r3znyJq0aWjXFHz6AW'),
-			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', 'guest@himalayancharter.com', 'RIDER', 'Elena Rostova (Charter Passenger)', '$2a$10$iaTcz7YGeZ3atHmJ0zouDOi2cag/ELuNuySd/eILBLZdi1./5H/7u')
+			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', 'admin@apextech.my', 'OPERATOR_ADMIN', 'Priya Nair (Corporate Transit Manager)', '$2a$10$OkAmq4G0eANM.xSNfAi0O.BZmB.OuMdSPahnJO/lgLlwOgIDTQs4i'),
+			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', 'driver@apextech.my', 'DRIVER', 'David Chen (Executive Fleet Captain)', '$2a$10$OkAmq4G0eANM.xSNfAi0O.BZmB.OuMdSPahnJO/lgLlwOgIDTQs4i'),
+			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', 'rider@apextech.my', 'RIDER', 'Marcus Vance (Staff Systems Engineer)', '$2a$10$OkAmq4G0eANM.xSNfAi0O.BZmB.OuMdSPahnJO/lgLlwOgIDTQs4i'),
+			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', 'admin@apextech.com', 'OPERATOR_ADMIN', 'Priya Nair (Corporate Transit Manager)', '$2a$10$OkAmq4G0eANM.xSNfAi0O.BZmB.OuMdSPahnJO/lgLlwOgIDTQs4i'),
+			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', 'driver@apextech.com', 'DRIVER', 'David Chen (Executive Fleet Captain)', '$2a$10$OkAmq4G0eANM.xSNfAi0O.BZmB.OuMdSPahnJO/lgLlwOgIDTQs4i'),
+			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', 'employee@apextech.com', 'RIDER', 'Marcus Vance (Staff Systems Engineer)', '$2a$10$OkAmq4G0eANM.xSNfAi0O.BZmB.OuMdSPahnJO/lgLlwOgIDTQs4i'),
+			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', 'admin@alpinecharter.in', 'OPERATOR_ADMIN', 'Tenzing Norbu (Expedition Operations Chief)', '$2a$10$OkAmq4G0eANM.xSNfAi0O.BZmB.OuMdSPahnJO/lgLlwOgIDTQs4i'),
+			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', 'driver@alpinecharter.in', 'DRIVER', 'Dorje Lama (Master Alpine Driver)', '$2a$10$OkAmq4G0eANM.xSNfAi0O.BZmB.OuMdSPahnJO/lgLlwOgIDTQs4i'),
+			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', 'rider@alpinecharter.in', 'RIDER', 'Elena Rostova (Charter Passenger)', '$2a$10$OkAmq4G0eANM.xSNfAi0O.BZmB.OuMdSPahnJO/lgLlwOgIDTQs4i'),
+			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', 'admin@himalayancharter.com', 'OPERATOR_ADMIN', 'Tenzing Norbu (Expedition Operations Chief)', '$2a$10$OkAmq4G0eANM.xSNfAi0O.BZmB.OuMdSPahnJO/lgLlwOgIDTQs4i'),
+			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', 'driver@himalayancharter.com', 'DRIVER', 'Dorje Lama (Master Alpine Driver)', '$2a$10$OkAmq4G0eANM.xSNfAi0O.BZmB.OuMdSPahnJO/lgLlwOgIDTQs4i'),
+			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', 'guest@himalayancharter.com', 'RIDER', 'Elena Rostova (Charter Passenger)', '$2a$10$OkAmq4G0eANM.xSNfAi0O.BZmB.OuMdSPahnJO/lgLlwOgIDTQs4i')
 		ON CONFLICT (tenant_id, email) DO UPDATE SET password_hash = EXCLUDED.password_hash, full_name = EXCLUDED.full_name`,
 		`INSERT INTO stops (id, tenant_id, name, code, latitude, longitude, location) VALUES
 			('66666666-0001-0001-0000-000000000001', '66666666-6666-6666-6666-666666666666', 'Tech Park Gate 1 (North Concourse)', 'APEX-G1', 3.1310, 101.6850, ST_SetSRID(ST_MakePoint(101.6850, 3.1310), 4326)::geography),

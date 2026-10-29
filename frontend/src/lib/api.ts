@@ -28,6 +28,8 @@ export interface LoginRequest {
   email: string;
   password: string;
   tenant_id?: string;
+  tenant_slug?: string;
+  workspace_slug?: string;
 }
 
 export interface SignUpRequest {
