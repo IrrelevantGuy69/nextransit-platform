@@ -5,6 +5,7 @@ export interface Tenant {
   name: string;
   slug: string;
   status: string;
+  sector_type?: 'UNIVERSITY_CAMPUS' | 'CORPORATE_SHUTTLE' | 'PRIVATE_CHARTER' | string;
   created_at: string;
 }
 
@@ -49,6 +50,11 @@ export interface Bus {
   current_stop_sequence?: number;
   progress_pct?: number;
   trip_ended_at?: string;
+  is_detour?: boolean;
+  detour_reason?: string;
+  detour_lat?: number;
+  detour_lng?: number;
+  bypassed_stop_sequences?: number[];
   created_at: string;
 }
 
@@ -126,6 +132,11 @@ export interface BusSnapshot {
   speed_kmh: number;
   heading_deg: number;
   occupancy: number;
+  is_detour?: boolean;
+  detour_reason?: string;
+  detour_lat?: number;
+  detour_lng?: number;
+  bypassed_stop_sequences?: number[];
 }
 
 export interface IngestTelemetryRequest {
@@ -155,10 +166,16 @@ export interface StopETA {
   eta_minutes: number;
   min_eta_minutes?: number;
   max_eta_minutes?: number;
-  status?: 'PASSED' | 'ARRIVING_NOW' | 'ARRIVED' | 'UPCOMING' | 'TERMINAL_REACHED' | string;
+  status?: 'PASSED' | 'ARRIVING_NOW' | 'ARRIVED' | 'UPCOMING' | 'TERMINAL_REACHED' | 'BYPASSED_DETOUR' | string;
   historical_avg_sec?: number;
   mae_minutes?: number;
   on_time_pct?: number;
+  is_detour?: boolean;
+  detour_delay_min?: number;
+  bypassed?: boolean;
+  detour_reason?: string;
+  detour_lat?: number;
+  detour_lng?: number;
 }
 
 export interface TransitEvent {
@@ -203,6 +220,9 @@ export interface SeatInventory {
   held_until?: string;
   booked_by_user_id?: string;
   booked_at?: string;
+  qr_token?: string;
+  checked_in?: boolean;
+  checked_in_at?: string;
   remaining_sec: number;
 }
 
@@ -487,6 +507,82 @@ export interface DevTokenResponse {
 export interface CreateTenantRequest {
   name: string;
   slug: string;
+  sector_type?: 'UNIVERSITY_CAMPUS' | 'CORPORATE_SHUTTLE' | 'PRIVATE_CHARTER' | string;
+}
+
+export interface BusDetourRequest {
+  bus_id: string;
+  is_detour: boolean;
+  detour_reason?: string;
+  detour_lat?: number;
+  detour_lng?: number;
+  bypassed_stops?: number[];
+}
+
+export interface BusDetourResponse {
+  success: boolean;
+  bus_id: string;
+  is_detour: boolean;
+  detour_reason: string;
+  detour_lat?: number;
+  detour_lng?: number;
+  bypassed_stops: number[];
+  message: string;
+}
+
+export interface SeatWaitlist {
+  id: string;
+  tenant_id: string;
+  trip_id: string;
+  route_id: string;
+  rider_name: string;
+  rider_email: string;
+  preferred_seat?: string;
+  boarding_stop_id?: string;
+  status: 'WAITING' | 'CONFIRMED' | 'CANCELLED' | string;
+  promoted_seat?: string;
+  created_at: string;
+  position?: number;
+}
+
+export interface JoinWaitlistRequest {
+  trip_id: string;
+  route_id?: string;
+  rider_name: string;
+  rider_email: string;
+  preferred_seat?: string;
+  boarding_stop_id?: string;
+}
+
+export interface CancelSeatRequest {
+  trip_id: string;
+  seat_number: string;
+}
+
+export interface CancelSeatResponse {
+  success: boolean;
+  trip_id: string;
+  seat_number: string;
+  promoted: boolean;
+  promoted_rider?: string;
+  promoted_email?: string;
+  qr_token?: string;
+  message: string;
+}
+
+export interface CheckInQRRequest {
+  trip_id: string;
+  seat_number: string;
+  qr_token: string;
+}
+
+export interface CheckInQRResponse {
+  success: boolean;
+  trip_id: string;
+  seat_number: string;
+  checked_in: boolean;
+  checked_in_at: string;
+  message: string;
 }
 
 export interface CreateUserRequest {
@@ -993,6 +1089,62 @@ export class ApiClient {
       throw new Error(`Metrics HTTP error: ${res.status}`);
     }
     return res.text();
+  }
+
+  async triggerBusDetour(req: BusDetourRequest, tenantHeader?: string): Promise<BusDetourResponse> {
+    const headers: Record<string, string> = {};
+    if (tenantHeader) {
+      headers['X-Tenant-ID'] = tenantHeader;
+    }
+    return this.request<BusDetourResponse>('/api/v1/buses/detour', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(req),
+    });
+  }
+
+  async joinSeatWaitlist(req: JoinWaitlistRequest, tenantHeader?: string): Promise<SeatWaitlist> {
+    const headers: Record<string, string> = {};
+    if (tenantHeader) {
+      headers['X-Tenant-ID'] = tenantHeader;
+    }
+    return this.request<SeatWaitlist>('/api/v1/trips/waitlist', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(req),
+    });
+  }
+
+  async getSeatWaitlist(tripID: string, tenantHeader?: string): Promise<SeatWaitlist[]> {
+    const headers: Record<string, string> = {};
+    if (tenantHeader) {
+      headers['X-Tenant-ID'] = tenantHeader;
+    }
+    return this.request<SeatWaitlist[]>(`/api/v1/trips/${tripID}/waitlist`, { headers });
+  }
+
+  async cancelSeatReservation(req: CancelSeatRequest, tenantHeader?: string): Promise<CancelSeatResponse> {
+    const headers: Record<string, string> = {};
+    if (tenantHeader) {
+      headers['X-Tenant-ID'] = tenantHeader;
+    }
+    return this.request<CancelSeatResponse>('/api/v1/trips/cancel-seat', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(req),
+    });
+  }
+
+  async checkInBoardingQR(req: CheckInQRRequest, tenantHeader?: string): Promise<CheckInQRResponse> {
+    const headers: Record<string, string> = {};
+    if (tenantHeader) {
+      headers['X-Tenant-ID'] = tenantHeader;
+    }
+    return this.request<CheckInQRResponse>('/api/v1/trips/check-in', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(req),
+    });
   }
 }
 

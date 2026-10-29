@@ -35,6 +35,7 @@ import (
 type Server struct {
 	pool        *db.Pool
 	jwtManager  *auth.JWTManager
+	jwtSecret   string
 	rateLimiter *RateLimiter
 	metrics     *SystemMetrics
 }
@@ -308,11 +309,12 @@ type ChaosTestReport struct {
 }
 
 type Tenant struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Slug      string    `json:"slug"`
-	Status    string    `json:"status"`
-	CreatedAt time.Time `json:"created_at"`
+	ID         string    `json:"id"`
+	Name       string    `json:"name"`
+	Slug       string    `json:"slug"`
+	Status     string    `json:"status"`
+	SectorType string    `json:"sector_type"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 type User struct {
@@ -326,18 +328,23 @@ type User struct {
 }
 
 type Bus struct {
-	ID                  string     `json:"id"`
-	TenantID            string     `json:"tenant_id"`
-	FleetCode           string     `json:"fleet_code"`
-	PlateNumber         string     `json:"plate_number"`
-	Model               string     `json:"model"`
-	Capacity            int        `json:"capacity"`
-	Status              string     `json:"status"`
-	TripStatus          string     `json:"trip_status"`
-	CurrentStopSequence int        `json:"current_stop_sequence"`
-	ProgressPct         float64    `json:"progress_pct"`
-	TripEndedAt         *time.Time `json:"trip_ended_at,omitempty"`
-	CreatedAt           time.Time  `json:"created_at"`
+	ID                     string     `json:"id"`
+	TenantID               string     `json:"tenant_id"`
+	FleetCode              string     `json:"fleet_code"`
+	PlateNumber            string     `json:"plate_number"`
+	Model                  string     `json:"model"`
+	Capacity               int        `json:"capacity"`
+	Status                 string     `json:"status"`
+	TripStatus             string     `json:"trip_status"`
+	CurrentStopSequence    int        `json:"current_stop_sequence"`
+	ProgressPct            float64    `json:"progress_pct"`
+	TripEndedAt            *time.Time `json:"trip_ended_at,omitempty"`
+	IsDetour               bool       `json:"is_detour"`
+	DetourReason           string     `json:"detour_reason"`
+	DetourLat              *float64   `json:"detour_lat,omitempty"`
+	DetourLng              *float64   `json:"detour_lng,omitempty"`
+	BypassedStopSequences  []int      `json:"bypassed_stop_sequences,omitempty"`
+	CreatedAt              time.Time  `json:"created_at"`
 }
 
 type CreateBusRequest struct {
@@ -417,26 +424,31 @@ type BusTelemetry struct {
 }
 
 type BusSnapshot struct {
-	RecordedAt          time.Time  `json:"recorded_at"`
-	TenantID            string     `json:"tenant_id"`
-	BusID               string     `json:"bus_id"`
-	FleetCode           string     `json:"fleet_code"`
-	PlateNumber         string     `json:"plate_number"`
-	Model               string     `json:"model"`
-	Capacity            int        `json:"capacity"`
-	BusStatus           string     `json:"bus_status"`
-	TripStatus          string     `json:"trip_status"`
-	CurrentStopSequence int        `json:"current_stop_sequence"`
-	ProgressPct         float64    `json:"progress_pct"`
-	TripEndedAt         *time.Time `json:"trip_ended_at,omitempty"`
-	RouteID             *string    `json:"route_id,omitempty"`
-	RouteCode           string     `json:"route_code"`
-	RouteName           string     `json:"route_name"`
-	Latitude            float64    `json:"latitude"`
-	Longitude           float64    `json:"longitude"`
-	SpeedKmh            float64    `json:"speed_kmh"`
-	HeadingDeg          float64    `json:"heading_deg"`
-	Occupancy           int        `json:"occupancy"`
+	RecordedAt            time.Time  `json:"recorded_at"`
+	TenantID              string     `json:"tenant_id"`
+	BusID                 string     `json:"bus_id"`
+	FleetCode             string     `json:"fleet_code"`
+	PlateNumber           string     `json:"plate_number"`
+	Model                 string     `json:"model"`
+	Capacity              int        `json:"capacity"`
+	BusStatus             string     `json:"bus_status"`
+	TripStatus            string     `json:"trip_status"`
+	CurrentStopSequence   int        `json:"current_stop_sequence"`
+	ProgressPct           float64    `json:"progress_pct"`
+	TripEndedAt           *time.Time `json:"trip_ended_at,omitempty"`
+	RouteID               *string    `json:"route_id,omitempty"`
+	RouteCode             string     `json:"route_code"`
+	RouteName             string     `json:"route_name"`
+	Latitude              float64    `json:"latitude"`
+	Longitude             float64    `json:"longitude"`
+	SpeedKmh              float64    `json:"speed_kmh"`
+	HeadingDeg            float64    `json:"heading_deg"`
+	Occupancy             int        `json:"occupancy"`
+	IsDetour              bool       `json:"is_detour"`
+	DetourReason          string     `json:"detour_reason"`
+	DetourLat             *float64   `json:"detour_lat,omitempty"`
+	DetourLng             *float64   `json:"detour_lng,omitempty"`
+	BypassedStopSequences []int      `json:"bypassed_stop_sequences,omitempty"`
 }
 
 type IngestTelemetryRequest struct {
@@ -451,25 +463,31 @@ type IngestTelemetryRequest struct {
 }
 
 type StopETA struct {
-	RouteID          string  `json:"route_id"`
-	StopID           string  `json:"stop_id"`
-	StopName         string  `json:"stop_name"`
-	StopCode         string  `json:"stop_code"`
-	StopLatitude     float64 `json:"stop_latitude"`
-	StopLongitude    float64 `json:"stop_longitude"`
-	StopSequence     int     `json:"stop_sequence"`
-	BusID            string  `json:"bus_id"`
-	FleetCode        string  `json:"fleet_code"`
-	BusSpeedKmh      float64 `json:"bus_speed_kmh"`
-	DistanceMeters   float64 `json:"distance_meters"`
-	DistanceKm       float64 `json:"distance_km"`
-	ETAMinutes       float64 `json:"eta_minutes"`
-	MinETAMinutes    float64 `json:"min_eta_minutes"`
-	MaxETAMinutes    float64 `json:"max_eta_minutes"`
-	Status           string  `json:"status"`
-	HistoricalAvgSec int     `json:"historical_avg_sec"`
-	MAEMinutes       float64 `json:"mae_minutes"`
-	OnTimePct        float64 `json:"on_time_pct"`
+	RouteID          string   `json:"route_id"`
+	StopID           string   `json:"stop_id"`
+	StopName         string   `json:"stop_name"`
+	StopCode         string   `json:"stop_code"`
+	StopLatitude     float64  `json:"stop_latitude"`
+	StopLongitude    float64  `json:"stop_longitude"`
+	StopSequence     int      `json:"stop_sequence"`
+	BusID            string   `json:"bus_id"`
+	FleetCode        string   `json:"fleet_code"`
+	BusSpeedKmh      float64  `json:"bus_speed_kmh"`
+	DistanceMeters   float64  `json:"distance_meters"`
+	DistanceKm       float64  `json:"distance_km"`
+	ETAMinutes       float64  `json:"eta_minutes"`
+	MinETAMinutes    float64  `json:"min_eta_minutes"`
+	MaxETAMinutes    float64  `json:"max_eta_minutes"`
+	Status           string   `json:"status"`
+	HistoricalAvgSec int      `json:"historical_avg_sec"`
+	MAEMinutes       float64  `json:"mae_minutes"`
+	OnTimePct        float64  `json:"on_time_pct"`
+	IsDetour         bool     `json:"is_detour"`
+	DetourDelayMin   float64  `json:"detour_delay_min"`
+	Bypassed         bool     `json:"bypassed"`
+	DetourReason     string   `json:"detour_reason,omitempty"`
+	DetourLat        *float64 `json:"detour_lat,omitempty"`
+	DetourLng        *float64 `json:"detour_lng,omitempty"`
 }
 
 type TransitEvent struct {
@@ -532,8 +550,11 @@ type AuthResponse struct {
 }
 
 type CreateTenantRequest struct {
-	Name string `json:"name"`
-	Slug string `json:"slug"`
+	Name       string  `json:"name"`
+	Slug       string  `json:"slug"`
+	SectorType string  `json:"sector_type,omitempty"`
+	CityLat    float64 `json:"city_lat,omitempty"`
+	CityLng    float64 `json:"city_lng,omitempty"`
 }
 
 type CreateUserRequest struct {
@@ -567,6 +588,9 @@ type SeatInventory struct {
 	HeldUntil      *time.Time `json:"held_until,omitempty"`
 	BookedByUserID *string    `json:"booked_by_user_id,omitempty"`
 	BookedAt       *time.Time `json:"booked_at,omitempty"`
+	QRToken        *string    `json:"qr_token,omitempty"`
+	CheckedIn      bool       `json:"checked_in"`
+	CheckedInAt    *time.Time `json:"checked_in_at,omitempty"`
 	RemainingSec   int        `json:"remaining_sec"`
 }
 
@@ -579,6 +603,8 @@ type Booking struct {
 	TicketCode string    `json:"ticket_code"`
 	Status     string    `json:"status"`
 	QRPayload  string    `json:"qr_payload"`
+	QRToken    string    `json:"qr_token,omitempty"`
+	CheckedIn  bool      `json:"checked_in"`
 	CreatedAt  time.Time `json:"created_at"`
 }
 
@@ -588,6 +614,79 @@ type HoldSeatRequest struct {
 
 type BookSeatRequest struct {
 	SeatNumber string `json:"seat_number"`
+}
+
+type BusDetourRequest struct {
+	BusID         string   `json:"bus_id"`
+	IsDetour      bool     `json:"is_detour"`
+	DetourReason  string   `json:"detour_reason,omitempty"`
+	DetourLat     *float64 `json:"detour_lat,omitempty"`
+	DetourLng     *float64 `json:"detour_lng,omitempty"`
+	BypassedStops []int    `json:"bypassed_stops,omitempty"`
+}
+
+type BusDetourResponse struct {
+	Success       bool     `json:"success"`
+	BusID         string   `json:"bus_id"`
+	IsDetour      bool     `json:"is_detour"`
+	DetourReason  string   `json:"detour_reason"`
+	DetourLat     *float64 `json:"detour_lat,omitempty"`
+	DetourLng     *float64 `json:"detour_lng,omitempty"`
+	BypassedStops []int    `json:"bypassed_stops"`
+	Message       string   `json:"message"`
+}
+
+type SeatWaitlist struct {
+	ID             string    `json:"id"`
+	TenantID       string    `json:"tenant_id"`
+	TripID         string    `json:"trip_id"`
+	RouteID        string    `json:"route_id"`
+	RiderName      string    `json:"rider_name"`
+	RiderEmail     string    `json:"rider_email"`
+	PreferredSeat  *string   `json:"preferred_seat,omitempty"`
+	BoardingStopID *string   `json:"boarding_stop_id,omitempty"`
+	Status         string    `json:"status"`
+	PromotedSeat   *string   `json:"promoted_seat,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	Position       int       `json:"position,omitempty"`
+}
+
+type JoinWaitlistRequest struct {
+	TripID         string  `json:"trip_id"`
+	RouteID        *string `json:"route_id,omitempty"`
+	RiderName      string  `json:"rider_name"`
+	RiderEmail     string  `json:"rider_email"`
+	PreferredSeat  *string `json:"preferred_seat,omitempty"`
+	BoardingStopID *string `json:"boarding_stop_id,omitempty"`
+}
+
+type CancelSeatRequest struct {
+	TripID     string `json:"trip_id"`
+	SeatNumber string `json:"seat_number"`
+}
+
+type PromotionResult struct {
+	Promoted   bool   `json:"promoted"`
+	WaitlistID string `json:"waitlist_id,omitempty"`
+	RiderName  string `json:"rider_name,omitempty"`
+	RiderEmail string `json:"rider_email,omitempty"`
+	SeatNumber string `json:"seat_number"`
+	QRToken    string `json:"qr_token,omitempty"`
+}
+
+type CheckInQRRequest struct {
+	TripID     string `json:"trip_id"`
+	SeatNumber string `json:"seat_number"`
+	QRToken    string `json:"qr_token"`
+}
+
+type CheckInQRResponse struct {
+	Success     bool      `json:"success"`
+	TripID      string    `json:"trip_id"`
+	SeatNumber  string    `json:"seat_number"`
+	CheckedIn   bool      `json:"checked_in"`
+	CheckedInAt time.Time `json:"checked_in_at"`
+	Message     string    `json:"message"`
 }
 
 type ConcurrencyClashRequest struct {
@@ -632,9 +731,11 @@ func main() {
 	srv := &Server{
 		pool:        poolWrapper,
 		jwtManager:  jwtManager,
+		jwtSecret:   jwtSecret,
 		rateLimiter: NewRateLimiter(60, 100),
 		metrics:     &SystemMetrics{},
 	}
+	_ = srv.ensureSchema(context.Background())
 	srv.startExpiredHoldSweeper(context.Background())
 
 	r := chi.NewRouter()
@@ -661,11 +762,16 @@ func main() {
 		r.Post("/analytics/apply-suggestion", srv.handleApplyScheduleSuggestion)
 		r.Post("/webhooks/test", srv.handleWebhooksTest)
 		r.Post("/system/chaos-test", srv.handleChaosTest)
+		r.Post("/buses/detour", srv.handleBusDetour)
+		r.Post("/trips/waitlist", srv.handleJoinWaitlist)
+		r.Get("/trips/{tripID}/waitlist", srv.handleGetWaitlist)
+		r.Post("/trips/cancel-seat", srv.handleCancelSeat)
+		r.Post("/trips/check-in", srv.handleCheckInQR)
 
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.AuthMiddleware(srv.jwtManager))
 
-			r.With(middleware.RequireRole(auth.RoleSuperAdmin)).Post("/tenants", srv.handleCreateTenant)
+			r.With(middleware.RequireRole(auth.RoleSuperAdmin, auth.RoleOperatorAdmin)).Post("/tenants", srv.handleCreateTenant)
 
 			r.Get("/users", srv.handleListUsers)
 			r.Post("/users", srv.handleCreateUser)
@@ -1094,7 +1200,7 @@ func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListTenants(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.pool.Query(r.Context(), "SELECT id, name, slug, status, created_at FROM tenants ORDER BY created_at DESC")
+	rows, err := s.pool.Query(r.Context(), "SELECT id, name, slug, status, COALESCE(sector_type, 'UNIVERSITY_CAMPUS'), created_at FROM tenants ORDER BY created_at DESC")
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to query tenants: "+err.Error())
 		return
@@ -1104,7 +1210,7 @@ func (s *Server) handleListTenants(w http.ResponseWriter, r *http.Request) {
 	tenants := make([]Tenant, 0)
 	for rows.Next() {
 		var t Tenant
-		if err := rows.Scan(&t.ID, &t.Name, &t.Slug, &t.Status, &t.CreatedAt); err != nil {
+		if err := rows.Scan(&t.ID, &t.Name, &t.Slug, &t.Status, &t.SectorType, &t.CreatedAt); err != nil {
 			respondError(w, http.StatusInternalServerError, "failed to scan tenant: "+err.Error())
 			return
 		}
@@ -1131,11 +1237,155 @@ func (s *Server) handleCreateTenant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	sectorType := req.SectorType
+	if sectorType == "" {
+		sectorType = "UNIVERSITY_CAMPUS"
+	}
+
+	cityLat := req.CityLat
+	cityLng := req.CityLng
+	if cityLat == 0 && cityLng == 0 {
+		switch sectorType {
+		case "CORPORATE_SHUTTLE":
+			cityLat = 3.111
+			cityLng = 101.666
+		case "PRIVATE_CHARTER":
+			cityLat = 2.745
+			cityLng = 101.700
+		default:
+			cityLat = 3.1209
+			cityLng = 101.6538
+		}
+	}
+
 	var tenant Tenant
-	err := s.pool.QueryRow(r.Context(),
-		"INSERT INTO tenants (id, name, slug, status) VALUES (gen_random_uuid(), $1, $2, 'ACTIVE') RETURNING id, name, slug, status, created_at",
-		req.Name, req.Slug,
-	).Scan(&tenant.ID, &tenant.Name, &tenant.Slug, &tenant.Status, &tenant.CreatedAt)
+	tenant.ID = uuid.New().String()
+	tenant.Name = req.Name
+	tenant.Slug = req.Slug
+	tenant.Status = "ACTIVE"
+	tenant.SectorType = sectorType
+	tenant.CreatedAt = time.Now().UTC()
+
+	err := db.WithTenantTx(r.Context(), s.pool.Pool, "SUPER_ADMIN", func(tx pgx.Tx) error {
+		err := tx.QueryRow(r.Context(),
+			"INSERT INTO tenants (id, name, slug, status, sector_type) VALUES ($1, $2, $3, 'ACTIVE', $4) RETURNING id, name, slug, status, sector_type, created_at",
+			tenant.ID, tenant.Name, tenant.Slug, tenant.SectorType,
+		).Scan(&tenant.ID, &tenant.Name, &tenant.Slug, &tenant.Status, &tenant.SectorType, &tenant.CreatedAt)
+		if err != nil {
+			return err
+		}
+
+		routeID := uuid.New().String()
+		routeCode := strings.ToUpper(tenant.Slug)
+		if len(routeCode) > 6 {
+			routeCode = routeCode[:6]
+		}
+		routeCode = fmt.Sprintf("RT-%s", routeCode)
+		routeName := fmt.Sprintf("%s Express Corridor", tenant.Name)
+
+		_, err = tx.Exec(r.Context(), `
+			INSERT INTO routes (id, tenant_id, name, code, origin, destination, distance_km, estimated_minutes, active, created_at)
+			VALUES ($1, $2, $3, $4, 'Hub Terminal', 'Depot Gate', 6.4, 18, true, NOW())`,
+			routeID, tenant.ID, routeName, routeCode,
+		)
+		if err != nil {
+			return err
+		}
+
+		type StopSeed struct {
+			Name string
+			Code string
+			Lat  float64
+			Lng  float64
+			Seq  int
+		}
+		stopsToSeed := []StopSeed{
+			{Name: "Hub Terminal", Code: fmt.Sprintf("%s-S1", routeCode), Lat: cityLat, Lng: cityLng, Seq: 1},
+			{Name: "North Concourse", Code: fmt.Sprintf("%s-S2", routeCode), Lat: cityLat + 0.0055, Lng: cityLng + 0.0045, Seq: 2},
+			{Name: "Central Interchange", Code: fmt.Sprintf("%s-S3", routeCode), Lat: cityLat + 0.0110, Lng: cityLng + 0.0025, Seq: 3},
+			{Name: "Depot Gate", Code: fmt.Sprintf("%s-S4", routeCode), Lat: cityLat + 0.0155, Lng: cityLng - 0.0020, Seq: 4},
+		}
+
+		for _, st := range stopsToSeed {
+			stopID := uuid.New().String()
+			_, err = tx.Exec(r.Context(), `
+				INSERT INTO stops (id, tenant_id, name, code, latitude, longitude, location, created_at)
+				VALUES ($1, $2, $3, $4, $5, $6, ST_SetSRID(ST_MakePoint($6, $5), 4326)::geography, NOW())`,
+				stopID, tenant.ID, st.Name, st.Code, st.Lat, st.Lng,
+			)
+			if err != nil {
+				return err
+			}
+			_, err = tx.Exec(r.Context(), `
+				INSERT INTO route_stops (id, route_id, stop_id, stop_sequence)
+				VALUES (gen_random_uuid(), $1, $2, $3)`,
+				routeID, stopID, st.Seq,
+			)
+			if err != nil {
+				return err
+			}
+		}
+
+		bus1ID := uuid.New().String()
+		slugPrefix := tenant.Slug
+		if len(slugPrefix) > 4 {
+			slugPrefix = slugPrefix[:4]
+		}
+		bus1Code := fmt.Sprintf("BUS-%s-01", strings.ToUpper(slugPrefix))
+		_, err = tx.Exec(r.Context(), `
+			INSERT INTO buses (id, tenant_id, fleet_code, plate_number, model, capacity, status, trip_status, current_stop_sequence, progress_pct)
+			VALUES ($1, $2, $3, $4, 'BYOD EV Shuttle 40', 40, 'ACTIVE', 'IN_TRANSIT', 1, 15.0)`,
+			bus1ID, tenant.ID, bus1Code, fmt.Sprintf("W%d01A", (time.Now().Unix()%9000)+1000),
+		)
+		if err != nil {
+			return err
+		}
+
+		bus2ID := uuid.New().String()
+		bus2Code := fmt.Sprintf("BUS-%s-02", strings.ToUpper(slugPrefix))
+		_, err = tx.Exec(r.Context(), `
+			INSERT INTO buses (id, tenant_id, fleet_code, plate_number, model, capacity, status, trip_status, current_stop_sequence, progress_pct)
+			VALUES ($1, $2, $3, $4, 'Scania City Cruiser', 40, 'ACTIVE', 'AT_STOP', 1, 0.0)`,
+			bus2ID, tenant.ID, bus2Code, fmt.Sprintf("W%d02B", (time.Now().Unix()%9000)+1000),
+		)
+		if err != nil {
+			return err
+		}
+
+		tripID := uuid.New().String()
+		_, err = tx.Exec(r.Context(), `
+			INSERT INTO trips (id, tenant_id, bus_id, route_id, departure_time, status)
+			VALUES ($1, $2, $3, $4, NOW(), 'ACTIVE')`,
+			tripID, tenant.ID, bus1ID, routeID,
+		)
+		if err != nil {
+			return err
+		}
+
+		rowsSeat := []string{"A", "B", "C", "D"}
+		for rNum := 1; rNum <= 10; rNum++ {
+			for _, letter := range rowsSeat {
+				seatCode := fmt.Sprintf("%d%s", rNum, letter)
+				_, _ = tx.Exec(r.Context(), `
+					INSERT INTO seat_inventory (id, tenant_id, trip_id, seat_number, status)
+					VALUES (gen_random_uuid(), $1, $2, $3, 'AVAILABLE')
+					ON CONFLICT (trip_id, seat_number) DO NOTHING`,
+					tenant.ID, tripID, seatCode,
+				)
+			}
+		}
+
+		_, _ = tx.Exec(r.Context(), `
+			INSERT INTO bus_telemetry (
+				recorded_at, tenant_id, bus_id, route_id, latitude, longitude, location, speed_kmh, heading_deg, occupancy, trip_status, progress_pct
+			) VALUES (
+				NOW(), $1, $2, $3, $4, $5, ST_SetSRID(ST_MakePoint($5, $4), 4326)::geography, 38.0, 45.0, 18, 'IN_TRANSIT', 15.0
+			)`,
+			tenant.ID, bus1ID, routeID, cityLat, cityLng,
+		)
+
+		return nil
+	})
 
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -1147,7 +1397,7 @@ func (s *Server) handleCreateTenant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.logAudit(r.Context(), tenant.ID, s.resolveActorID(r), "CREATE_TENANT", "tenants", &tenant.ID, map[string]interface{}{"slug": tenant.Slug, "name": tenant.Name}, getClientIP(r))
+	s.logAudit(r.Context(), tenant.ID, s.resolveActorID(r), "CREATE_TENANT", "tenants", &tenant.ID, map[string]interface{}{"slug": tenant.Slug, "name": tenant.Name, "sector": tenant.SectorType}, getClientIP(r))
 
 	respondJSON(w, http.StatusCreated, tenant)
 }
@@ -1247,7 +1497,7 @@ func (s *Server) handleListBuses(w http.ResponseWriter, r *http.Request) {
 
 	buses := make([]Bus, 0)
 	err := db.WithTenantTx(r.Context(), s.pool.Pool, tenantContext, func(tx pgx.Tx) error {
-		rows, err := tx.Query(r.Context(), "SELECT id, tenant_id, fleet_code, plate_number, model, capacity, status, trip_status, current_stop_sequence, progress_pct, trip_ended_at, created_at FROM buses ORDER BY created_at DESC")
+		rows, err := tx.Query(r.Context(), "SELECT id, tenant_id, fleet_code, plate_number, model, capacity, status, trip_status, current_stop_sequence, progress_pct, trip_ended_at, COALESCE(is_detour, false), COALESCE(detour_reason, ''), detour_lat, detour_lng, COALESCE(bypassed_stop_sequences, '{}'), created_at FROM buses ORDER BY created_at DESC")
 		if err != nil {
 			return err
 		}
@@ -1255,7 +1505,7 @@ func (s *Server) handleListBuses(w http.ResponseWriter, r *http.Request) {
 
 		for rows.Next() {
 			var b Bus
-			if err := rows.Scan(&b.ID, &b.TenantID, &b.FleetCode, &b.PlateNumber, &b.Model, &b.Capacity, &b.Status, &b.TripStatus, &b.CurrentStopSequence, &b.ProgressPct, &b.TripEndedAt, &b.CreatedAt); err != nil {
+			if err := rows.Scan(&b.ID, &b.TenantID, &b.FleetCode, &b.PlateNumber, &b.Model, &b.Capacity, &b.Status, &b.TripStatus, &b.CurrentStopSequence, &b.ProgressPct, &b.TripEndedAt, &b.IsDetour, &b.DetourReason, &b.DetourLat, &b.DetourLng, &b.BypassedStopSequences, &b.CreatedAt); err != nil {
 				return err
 			}
 			buses = append(buses, b)
@@ -1678,10 +1928,37 @@ func (s *Server) handleIngestTelemetry(w http.ResponseWriter, r *http.Request) {
 
 	var telemetry BusTelemetry
 	err := db.WithTenantTx(r.Context(), s.pool.Pool, tenantContext, func(tx pgx.Tx) error {
-		return tx.QueryRow(r.Context(),
+		err := tx.QueryRow(r.Context(),
 			"INSERT INTO bus_telemetry (recorded_at, tenant_id, bus_id, route_id, latitude, longitude, location, speed_kmh, heading_deg, occupancy) VALUES (NOW(), $1, $2, $3, $4, $5, ST_SetSRID(ST_MakePoint($5, $4), 4326)::geography, $6, $7, $8) RETURNING recorded_at, tenant_id, bus_id, route_id, latitude, longitude, speed_kmh, heading_deg, occupancy",
 			targetTenantID, req.BusID, req.RouteID, req.Latitude, req.Longitude, req.SpeedKmh, req.HeadingDeg, req.Occupancy,
 		).Scan(&telemetry.RecordedAt, &telemetry.TenantID, &telemetry.BusID, &telemetry.RouteID, &telemetry.Latitude, &telemetry.Longitude, &telemetry.SpeedKmh, &telemetry.HeadingDeg, &telemetry.Occupancy)
+		if err != nil {
+			return err
+		}
+
+		if req.RouteID != nil && *req.RouteID != "" {
+			var distToRoute float64
+			_ = tx.QueryRow(r.Context(), `
+				SELECT COALESCE(ST_Distance(
+					ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography,
+					(SELECT ST_MakeLine(s.location::geometry ORDER BY rs.stop_sequence)::geography
+					 FROM route_stops rs
+					 JOIN stops s ON rs.stop_id = s.id
+					 WHERE rs.route_id = $3::uuid)
+				), 0)`, req.Longitude, req.Latitude, *req.RouteID).Scan(&distToRoute)
+
+			if distToRoute > 250.0 {
+				_, _ = tx.Exec(r.Context(), `
+					UPDATE buses
+					SET is_detour = true, detour_reason = 'Dynamic deviation > 250m off corridor'
+					WHERE id = $1::uuid`, req.BusID)
+				_, _ = tx.Exec(r.Context(), `
+					INSERT INTO transit_events (id, tenant_id, bus_id, route_id, event_type, triggered_at, distance_meters)
+					VALUES (gen_random_uuid(), $1, $2, $3, 'OFF_CORRIDOR_DEVIATION', NOW(), $4)`,
+					targetTenantID, req.BusID, *req.RouteID, distToRoute)
+			}
+		}
+		return nil
 	})
 
 	if err != nil {
@@ -1713,7 +1990,8 @@ func (s *Server) handleLatestTelemetry(w http.ResponseWriter, r *http.Request) {
 				t.recorded_at, t.tenant_id, t.bus_id, b.fleet_code, b.plate_number, b.model, b.capacity, b.status,
 				b.trip_status, b.current_stop_sequence, b.progress_pct, b.trip_ended_at,
 				t.route_id, COALESCE(r.code, ''), COALESCE(r.name, ''),
-				t.latitude, t.longitude, t.speed_kmh, t.heading_deg, t.occupancy
+				t.latitude, t.longitude, t.speed_kmh, t.heading_deg, t.occupancy,
+				COALESCE(b.is_detour, false), COALESCE(b.detour_reason, ''), b.detour_lat, b.detour_lng, COALESCE(b.bypassed_stop_sequences, '{}')
 			FROM bus_telemetry t
 			JOIN buses b ON t.bus_id = b.id
 			LEFT JOIN routes r ON t.route_id = r.id
@@ -1732,6 +2010,7 @@ func (s *Server) handleLatestTelemetry(w http.ResponseWriter, r *http.Request) {
 				&sn.TripStatus, &sn.CurrentStopSequence, &sn.ProgressPct, &sn.TripEndedAt,
 				&sn.RouteID, &sn.RouteCode, &sn.RouteName,
 				&sn.Latitude, &sn.Longitude, &sn.SpeedKmh, &sn.HeadingDeg, &sn.Occupancy,
+				&sn.IsDetour, &sn.DetourReason, &sn.DetourLat, &sn.DetourLng, &sn.BypassedStopSequences,
 			); err != nil {
 				return err
 			}
@@ -1782,6 +2061,11 @@ func (s *Server) queryETAs(w http.ResponseWriter, r *http.Request, routeID strin
 					b.fleet_code,
 					b.trip_status,
 					b.current_stop_sequence,
+					COALESCE(b.is_detour, false) as is_detour,
+					COALESCE(b.detour_reason, '') as detour_reason,
+					b.detour_lat,
+					b.detour_lng,
+					COALESCE(b.bypassed_stop_sequences, '{}') as bypassed_stop_sequences,
 					lb.route_id as active_route_id,
 					lb.location as bus_location,
 					COALESCE(lb.speed_kmh, 0.0) as live_speed_kmh
@@ -1802,6 +2086,11 @@ func (s *Server) queryETAs(w http.ResponseWriter, r *http.Request, routeID strin
 				COALESCE(bi.live_speed_kmh, 0.0) as bus_speed_kmh,
 				COALESCE(bi.trip_status, 'IN_TRANSIT') as trip_status,
 				COALESCE(bi.current_stop_sequence, 1) as current_stop_sequence,
+				COALESCE(bi.is_detour, false) as is_detour,
+				COALESCE(bi.detour_reason, '') as detour_reason,
+				bi.detour_lat,
+				bi.detour_lng,
+				COALESCE(bi.bypassed_stop_sequences, '{}') as bypassed_stop_sequences,
 				COALESCE(ST_Distance(bi.bus_location, s.location), 0) as distance_meters,
 				COALESCE((
 					SELECT SUM(rss.historical_avg_seconds)::int
@@ -1830,10 +2119,15 @@ func (s *Server) queryETAs(w http.ResponseWriter, r *http.Request, routeID strin
 			var e StopETA
 			var routeUUID, stopUUID, tripStatus string
 			var curSeq, histSec, maxSeq int
+			var isDetour bool
+			var detourReason string
+			var detourLat, detourLng *float64
+			var bypassedSeq []int
 			if err := rows.Scan(
 				&routeUUID, &stopUUID, &e.StopName, &e.StopCode, &e.StopLatitude, &e.StopLongitude, &e.StopSequence,
-				&e.BusID, &e.FleetCode, &e.BusSpeedKmh, &tripStatus, &curSeq, &e.DistanceMeters,
-				&histSec, &maxSeq,
+				&e.BusID, &e.FleetCode, &e.BusSpeedKmh, &tripStatus, &curSeq,
+				&isDetour, &detourReason, &detourLat, &detourLng, &bypassedSeq,
+				&e.DistanceMeters, &histSec, &maxSeq,
 			); err != nil {
 				return err
 			}
@@ -1843,11 +2137,29 @@ func (s *Server) queryETAs(w http.ResponseWriter, r *http.Request, routeID strin
 			e.HistoricalAvgSec = histSec
 			e.MAEMinutes = 1.2
 			e.OnTimePct = 96.4
+			e.IsDetour = isDetour
+			e.DetourReason = detourReason
+			e.DetourLat = detourLat
+			e.DetourLng = detourLng
+			if isDetour {
+				e.DetourDelayMin = 3.5
+			}
+			for _, bSeq := range bypassedSeq {
+				if bSeq == e.StopSequence {
+					e.Bypassed = true
+					break
+				}
+			}
 
 			liveSpeedMps := math.Max(e.BusSpeedKmh*1000.0/3600.0, 8.5)
 			liveTravelSec := e.DistanceMeters / liveSpeedMps
 
-			if e.StopSequence < curSeq {
+			if e.Bypassed {
+				e.Status = "BYPASSED_DETOUR"
+				e.ETAMinutes = 0
+				e.MinETAMinutes = 0
+				e.MaxETAMinutes = 0
+			} else if e.StopSequence < curSeq {
 				e.Status = "PASSED"
 				e.ETAMinutes = 0
 				e.MinETAMinutes = 0
@@ -1874,9 +2186,17 @@ func (s *Server) queryETAs(w http.ResponseWriter, r *http.Request, routeID strin
 				} else {
 					blendedSec = liveTravelSec
 				}
-				e.ETAMinutes = math.Round((blendedSec/60.0)*10.0) / 10.0
-				e.MinETAMinutes = math.Round(((blendedSec*0.88)/60.0)*10.0) / 10.0
-				e.MaxETAMinutes = math.Round(((blendedSec*1.15)/60.0)*10.0) / 10.0
+				calcEta := math.Round((blendedSec/60.0)*10.0) / 10.0
+				calcMin := math.Round(((blendedSec*0.88)/60.0)*10.0) / 10.0
+				calcMax := math.Round(((blendedSec*1.15)/60.0)*10.0) / 10.0
+				if isDetour {
+					calcEta = math.Round((calcEta+3.5)*10.0) / 10.0
+					calcMin = math.Round((calcMin+3.0)*10.0) / 10.0
+					calcMax = math.Round((calcMax+4.5)*10.0) / 10.0
+				}
+				e.ETAMinutes = calcEta
+				e.MinETAMinutes = calcMin
+				e.MaxETAMinutes = calcMax
 			}
 
 			etas = append(etas, e)
@@ -1916,13 +2236,18 @@ func (s *Server) handleSimulateStep(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type SimBus struct {
-		ID                  string
-		TenantID            string
-		FleetCode           string
-		TripStatus          string
-		CurrentStopSequence int
-		ProgressPct         float64
-		TripEndedAt         *time.Time
+		ID                    string
+		TenantID              string
+		FleetCode             string
+		TripStatus            string
+		CurrentStopSequence   int
+		ProgressPct           float64
+		TripEndedAt           *time.Time
+		IsDetour              bool
+		DetourReason          string
+		DetourLat             *float64
+		DetourLng             *float64
+		BypassedStopSequences []int
 	}
 
 	newTelemetry := make([]BusTelemetry, 0)
@@ -1932,12 +2257,14 @@ func (s *Server) handleSimulateStep(w http.ResponseWriter, r *http.Request) {
 		var err error
 		if req.BusID != nil && *req.BusID != "" {
 			busRows, err = tx.Query(r.Context(), `
-				SELECT id, tenant_id, fleet_code, trip_status, current_stop_sequence, progress_pct, trip_ended_at
+				SELECT id, tenant_id, fleet_code, trip_status, current_stop_sequence, progress_pct, trip_ended_at,
+				       COALESCE(is_detour, false), COALESCE(detour_reason, ''), detour_lat, detour_lng, COALESCE(bypassed_stop_sequences, '{}')
 				FROM buses
 				WHERE status = 'ACTIVE' AND id = $1::uuid`, *req.BusID)
 		} else {
 			busRows, err = tx.Query(r.Context(), `
-				SELECT id, tenant_id, fleet_code, trip_status, current_stop_sequence, progress_pct, trip_ended_at
+				SELECT id, tenant_id, fleet_code, trip_status, current_stop_sequence, progress_pct, trip_ended_at,
+				       COALESCE(is_detour, false), COALESCE(detour_reason, ''), detour_lat, detour_lng, COALESCE(bypassed_stop_sequences, '{}')
 				FROM buses
 				WHERE status = 'ACTIVE'`)
 		}
@@ -1949,7 +2276,7 @@ func (s *Server) handleSimulateStep(w http.ResponseWriter, r *http.Request) {
 		var buses []SimBus
 		for busRows.Next() {
 			var b SimBus
-			if err := busRows.Scan(&b.ID, &b.TenantID, &b.FleetCode, &b.TripStatus, &b.CurrentStopSequence, &b.ProgressPct, &b.TripEndedAt); err != nil {
+			if err := busRows.Scan(&b.ID, &b.TenantID, &b.FleetCode, &b.TripStatus, &b.CurrentStopSequence, &b.ProgressPct, &b.TripEndedAt, &b.IsDetour, &b.DetourReason, &b.DetourLat, &b.DetourLng, &b.BypassedStopSequences); err != nil {
 				return err
 			}
 			buses = append(buses, b)
@@ -2091,6 +2418,12 @@ func (s *Server) handleSimulateStep(w http.ResponseWriter, r *http.Request) {
 					newLng = fromStop.Longitude + (toStop.Longitude-fromStop.Longitude)*segFrac
 					newHeading = calculateHeading(fromStop.Latitude, fromStop.Longitude, toStop.Latitude, toStop.Longitude)
 
+					if b.IsDetour && b.DetourLat != nil && b.DetourLng != nil {
+						detourFactor := math.Sin((newProg / 100.0) * math.Pi)
+						newLat = newLat + (*b.DetourLat-newLat)*0.70*detourFactor
+						newLng = newLng + (*b.DetourLng-newLng)*0.70*detourFactor
+					}
+
 					if segFrac < 0.10 {
 						newStatus = "AT_STOP"
 						newSeq = fromStop.Sequence
@@ -2103,6 +2436,16 @@ func (s *Server) handleSimulateStep(w http.ResponseWriter, r *http.Request) {
 						newStatus = "IN_TRANSIT"
 						newSeq = fromStop.Sequence
 						newSpeed = 38.0 + math.Mod(float64(time.Now().UnixNano()%1000)/1000.0*20.0, 20.0)
+					}
+
+					if b.IsDetour && len(b.BypassedStopSequences) > 0 {
+						for _, bypassed := range b.BypassedStopSequences {
+							if newSeq == bypassed {
+								newStatus = "IN_TRANSIT"
+								newSpeed = 42.0
+								newSeq = bypassed + 1
+							}
+						}
 					}
 				}
 			}
@@ -2421,6 +2764,7 @@ func (s *Server) handleGetSeats(w http.ResponseWriter, r *http.Request) {
 			SELECT 
 				id, tenant_id, trip_id, seat_number, status,
 				held_by_user_id, held_until, booked_by_user_id, booked_at,
+				qr_token, COALESCE(checked_in, false), checked_in_at,
 				CASE 
 					WHEN status = 'HELD' AND held_until > NOW() THEN EXTRACT(EPOCH FROM (held_until - NOW()))::int
 					ELSE 0
@@ -2442,6 +2786,7 @@ func (s *Server) handleGetSeats(w http.ResponseWriter, r *http.Request) {
 			if err := rows.Scan(
 				&seat.ID, &seat.TenantID, &seat.TripID, &seat.SeatNumber, &seat.Status,
 				&seat.HeldByUserID, &seat.HeldUntil, &seat.BookedByUserID, &seat.BookedAt,
+				&seat.QRToken, &seat.CheckedIn, &seat.CheckedInAt,
 				&seat.RemainingSec,
 			); err != nil {
 				return err
@@ -2676,11 +3021,13 @@ func (s *Server) handleBookSeat(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		qrToken := s.generateBoardingQRToken(tripID, req.SeatNumber)
+
 		_, err = tx.Exec(r.Context(), `
 			UPDATE seat_inventory
-			SET status = 'BOOKED', booked_by_user_id = $1::uuid, booked_at = $2, held_by_user_id = NULL, held_until = NULL
-			WHERE id = $3::uuid`,
-			resolvedUserID, now, id,
+			SET status = 'BOOKED', booked_by_user_id = $1::uuid, booked_at = $2, held_by_user_id = NULL, held_until = NULL, qr_token = $3
+			WHERE id = $4::uuid`,
+			resolvedUserID, now, qrToken, id,
 		)
 		if err != nil {
 			return err
@@ -2692,7 +3039,7 @@ func (s *Server) handleBookSeat(w http.ResponseWriter, r *http.Request) {
 		}
 		ticketCode := fmt.Sprintf("TCK-%s-%s", strings.ToUpper(shortTrip), strings.ToUpper(req.SeatNumber))
 		bookingID := uuid.New().String()
-		qrPayload := fmt.Sprintf("NEXTRANSIT://TICKET/%s/%s/%s", tripID, req.SeatNumber, bookingID)
+		qrPayload := qrToken
 
 		booking = Booking{
 			ID:         bookingID,
@@ -3688,14 +4035,32 @@ func (s *Server) startExpiredHoldSweeper(ctx context.Context) {
 				return
 			case <-ticker.C:
 				_ = db.WithTenantTx(ctx, s.pool.Pool, "SUPER_ADMIN", func(tx pgx.Tx) error {
-					_, err := tx.Exec(ctx, `
-						UPDATE seat_inventory
-						SET status = 'AVAILABLE',
-						    held_by_user_id = NULL,
-						    held_until = NULL
+					rows, err := tx.Query(ctx, `
+						SELECT trip_id, seat_number
+						FROM seat_inventory
 						WHERE status = 'HELD' AND held_until < NOW()
+						FOR UPDATE SKIP LOCKED
 					`)
-					return err
+					if err != nil {
+						return err
+					}
+					type ExpiredSeat struct {
+						TripID     string
+						SeatNumber string
+					}
+					var expired []ExpiredSeat
+					for rows.Next() {
+						var es ExpiredSeat
+						if err := rows.Scan(&es.TripID, &es.SeatNumber); err == nil {
+							expired = append(expired, es)
+						}
+					}
+					rows.Close()
+
+					for _, es := range expired {
+						_, _ = s.promoteWaitlistOrFree(ctx, tx, es.TripID, es.SeatNumber)
+					}
+					return nil
 				})
 			}
 		}
@@ -4467,4 +4832,482 @@ func (s *Server) handleChaosTest(w http.ResponseWriter, r *http.Request) {
 	default:
 		respondError(w, http.StatusBadRequest, "unrecognized chaos scenario")
 	}
+}
+
+func (s *Server) ensureSchema(ctx context.Context) error {
+	queries := []string{
+		`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS sector_type VARCHAR(40) NOT NULL DEFAULT 'UNIVERSITY_CAMPUS'`,
+		`ALTER TABLE buses ADD COLUMN IF NOT EXISTS is_detour BOOLEAN NOT NULL DEFAULT FALSE`,
+		`ALTER TABLE buses ADD COLUMN IF NOT EXISTS detour_reason TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE buses ADD COLUMN IF NOT EXISTS detour_lat DOUBLE PRECISION`,
+		`ALTER TABLE buses ADD COLUMN IF NOT EXISTS detour_lng DOUBLE PRECISION`,
+		`ALTER TABLE buses ADD COLUMN IF NOT EXISTS bypassed_stop_sequences INTEGER[] DEFAULT '{}'`,
+		`CREATE TABLE IF NOT EXISTS seat_waitlist (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+			trip_id UUID NOT NULL,
+			route_id UUID NOT NULL,
+			rider_name VARCHAR(120) NOT NULL,
+			rider_email VARCHAR(150) NOT NULL,
+			preferred_seat VARCHAR(10),
+			boarding_stop_id UUID,
+			status VARCHAR(30) NOT NULL DEFAULT 'WAITING',
+			promoted_seat VARCHAR(10),
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`ALTER TABLE seat_waitlist ENABLE ROW LEVEL SECURITY`,
+		`ALTER TABLE seat_waitlist FORCE ROW LEVEL SECURITY`,
+		`DROP POLICY IF EXISTS tenant_isolation_policy ON seat_waitlist`,
+		`CREATE POLICY tenant_isolation_policy ON seat_waitlist
+			FOR ALL
+			TO app_user
+			USING (current_setting('app.current_tenant', true) = 'SUPER_ADMIN' OR tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
+			WITH CHECK (current_setting('app.current_tenant', true) = 'SUPER_ADMIN' OR tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)`,
+		`GRANT SELECT, INSERT, UPDATE, DELETE ON seat_waitlist TO app_user`,
+		`ALTER TABLE seat_inventory ADD COLUMN IF NOT EXISTS qr_token TEXT`,
+		`ALTER TABLE seat_inventory ADD COLUMN IF NOT EXISTS checked_in BOOLEAN NOT NULL DEFAULT FALSE`,
+		`ALTER TABLE seat_inventory ADD COLUMN IF NOT EXISTS checked_in_at TIMESTAMPTZ`,
+	}
+	for _, q := range queries {
+		_, _ = s.pool.Pool.Exec(ctx, q)
+	}
+	return nil
+}
+
+func (s *Server) generateBoardingQRToken(tripID, seatNumber string) string {
+	secret := s.jwtSecret
+	if secret == "" {
+		secret = "transit-platform-hmac-secret-key-2026"
+	}
+	h := hmac.New(sha256.New, []byte(secret))
+	h.Write([]byte(fmt.Sprintf("%s:%s", tripID, seatNumber)))
+	sigHex := hex.EncodeToString(h.Sum(nil))
+	return fmt.Sprintf("NXT-PASS:%s:%s:%s", tripID, seatNumber, sigHex)
+}
+
+func (s *Server) verifyBoardingQRToken(token, expectedTripID, expectedSeat string) bool {
+	parts := strings.Split(token, ":")
+	if len(parts) != 4 || parts[0] != "NXT-PASS" {
+		return false
+	}
+	tripID := parts[1]
+	seat := parts[2]
+	givenSig := parts[3]
+
+	if expectedTripID != "" && tripID != expectedTripID {
+		return false
+	}
+	if expectedSeat != "" && seat != expectedSeat {
+		return false
+	}
+
+	secret := s.jwtSecret
+	if secret == "" {
+		secret = "transit-platform-hmac-secret-key-2026"
+	}
+	h := hmac.New(sha256.New, []byte(secret))
+	h.Write([]byte(fmt.Sprintf("%s:%s", tripID, seat)))
+	expectedSig := hex.EncodeToString(h.Sum(nil))
+
+	return hmac.Equal([]byte(givenSig), []byte(expectedSig))
+}
+
+func (s *Server) promoteWaitlistOrFree(ctx context.Context, tx pgx.Tx, tripID, seatNumber string) (*PromotionResult, error) {
+	var waitlistID, riderName, riderEmail string
+	err := tx.QueryRow(ctx, `
+		SELECT id, rider_name, rider_email
+		FROM seat_waitlist
+		WHERE trip_id = $1::uuid AND status = 'WAITING'
+		ORDER BY created_at ASC
+		LIMIT 1
+		FOR UPDATE SKIP LOCKED`, tripID,
+	).Scan(&waitlistID, &riderName, &riderEmail)
+
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			_, err = tx.Exec(ctx, `
+				UPDATE seat_inventory
+				SET status = 'AVAILABLE', held_by_user_id = NULL, held_until = NULL, booked_by_user_id = NULL, booked_at = NULL, qr_token = NULL
+				WHERE trip_id = $1::uuid AND seat_number = $2`, tripID, seatNumber)
+			return &PromotionResult{Promoted: false, SeatNumber: seatNumber}, err
+		}
+		return nil, err
+	}
+
+	qrToken := s.generateBoardingQRToken(tripID, seatNumber)
+	now := time.Now().UTC()
+
+	_, err = tx.Exec(ctx, `
+		UPDATE seat_waitlist
+		SET status = 'CONFIRMED', promoted_seat = $1
+		WHERE id = $2::uuid`, seatNumber, waitlistID)
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = tx.Exec(ctx, `
+		UPDATE seat_inventory
+		SET status = 'BOOKED', booked_by_user_id = NULL, booked_at = $1, held_by_user_id = NULL, held_until = NULL, qr_token = $2
+		WHERE trip_id = $3::uuid AND seat_number = $4`, now, qrToken, tripID, seatNumber)
+	if err != nil {
+		return nil, err
+	}
+
+	return &PromotionResult{
+		Promoted:   true,
+		WaitlistID: waitlistID,
+		RiderName:  riderName,
+		RiderEmail: riderEmail,
+		SeatNumber: seatNumber,
+		QRToken:    qrToken,
+	}, nil
+}
+
+func (s *Server) handleBusDetour(w http.ResponseWriter, r *http.Request) {
+	tenantContext, callerTenantID := s.resolveTenantContext(r)
+	if tenantContext == "" || tenantContext == auth.RoleSuperAdmin {
+		tenantContext = callerTenantID
+	}
+
+	var req BusDetourRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.BusID == "" {
+		respondError(w, http.StatusBadRequest, "bus_id is required")
+		return
+	}
+
+	var resp BusDetourResponse
+	resp.BusID = req.BusID
+	resp.IsDetour = req.IsDetour
+	resp.DetourReason = req.DetourReason
+	resp.BypassedStops = req.BypassedStops
+	if resp.BypassedStops == nil {
+		resp.BypassedStops = []int{}
+	}
+
+	err := db.WithTenantTx(r.Context(), s.pool.Pool, tenantContext, func(tx pgx.Tx) error {
+		var busLat, busLng float64
+		_ = tx.QueryRow(r.Context(), `
+			SELECT latitude, longitude FROM bus_telemetry WHERE bus_id = $1::uuid ORDER BY recorded_at DESC LIMIT 1`, req.BusID).Scan(&busLat, &busLng)
+
+		var detourLat, detourLng *float64
+		if req.IsDetour {
+			if req.DetourLat != nil && req.DetourLng != nil && *req.DetourLat != 0 {
+				detourLat = req.DetourLat
+				detourLng = req.DetourLng
+			} else {
+				dLat := busLat + 0.0055
+				dLng := busLng + 0.0070
+				detourLat = &dLat
+				detourLng = &dLng
+			}
+			if len(resp.BypassedStops) == 0 {
+				var curSeq int
+				_ = tx.QueryRow(r.Context(), `SELECT current_stop_sequence FROM buses WHERE id = $1::uuid`, req.BusID).Scan(&curSeq)
+				if curSeq > 0 {
+					resp.BypassedStops = []int{curSeq, curSeq + 1}
+				} else {
+					resp.BypassedStops = []int{2, 3}
+				}
+			}
+		}
+
+		resp.DetourLat = detourLat
+		resp.DetourLng = detourLng
+
+		_, err := tx.Exec(r.Context(), `
+			UPDATE buses
+			SET is_detour = $1, detour_reason = $2, detour_lat = $3, detour_lng = $4, bypassed_stop_sequences = $5
+			WHERE id = $6::uuid`,
+			req.IsDetour, req.DetourReason, detourLat, detourLng, resp.BypassedStops, req.BusID,
+		)
+		if err != nil {
+			return err
+		}
+
+		var eventType string
+		if req.IsDetour {
+			eventType = "DETOUR_ACTIVATED"
+			resp.Message = fmt.Sprintf("Detour active: rerouted via waypoint (%0.4f, %0.4f). Bypassing stops %v.", *detourLat, *detourLng, resp.BypassedStops)
+		} else {
+			eventType = "DETOUR_CLEARED"
+			resp.Message = "Detour cleared: fleet returned to primary corridor path."
+		}
+
+		_, _ = tx.Exec(r.Context(), `
+			INSERT INTO transit_events (id, tenant_id, bus_id, event_type, triggered_at, distance_meters)
+			VALUES (gen_random_uuid(), $1, $2, $3, NOW(), 0)`,
+			tenantContext, req.BusID, eventType,
+		)
+
+		return nil
+	})
+
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to update detour: "+err.Error())
+		return
+	}
+
+	respondJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleJoinWaitlist(w http.ResponseWriter, r *http.Request) {
+	tenantContext, callerTenantID := s.resolveTenantContext(r)
+	if tenantContext == "" || tenantContext == auth.RoleSuperAdmin {
+		tenantContext = callerTenantID
+	}
+
+	var req JoinWaitlistRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.TripID == "" || req.RiderName == "" || req.RiderEmail == "" {
+		respondError(w, http.StatusBadRequest, "trip_id, rider_name, and rider_email are required")
+		return
+	}
+
+	var waitlist SeatWaitlist
+	err := db.WithTenantTx(r.Context(), s.pool.Pool, tenantContext, func(tx pgx.Tx) error {
+		var resolvedRouteID string
+		if req.RouteID != nil && *req.RouteID != "" {
+			resolvedRouteID = *req.RouteID
+		} else {
+			_ = tx.QueryRow(r.Context(), `SELECT route_id FROM trips WHERE id = $1::uuid`, req.TripID).Scan(&resolvedRouteID)
+			if resolvedRouteID == "" {
+				_ = tx.QueryRow(r.Context(), `SELECT id FROM routes WHERE tenant_id = $1::uuid LIMIT 1`, tenantContext).Scan(&resolvedRouteID)
+			}
+		}
+
+		waitlist.ID = uuid.New().String()
+		waitlist.TenantID = tenantContext
+		waitlist.TripID = req.TripID
+		waitlist.RouteID = resolvedRouteID
+		waitlist.RiderName = req.RiderName
+		waitlist.RiderEmail = req.RiderEmail
+		waitlist.PreferredSeat = req.PreferredSeat
+		waitlist.BoardingStopID = req.BoardingStopID
+		waitlist.Status = "WAITING"
+		waitlist.CreatedAt = time.Now().UTC()
+
+		_, err := tx.Exec(r.Context(), `
+			INSERT INTO seat_waitlist (id, tenant_id, trip_id, route_id, rider_name, rider_email, preferred_seat, boarding_stop_id, status, created_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+			waitlist.ID, waitlist.TenantID, waitlist.TripID, waitlist.RouteID, waitlist.RiderName, waitlist.RiderEmail, waitlist.PreferredSeat, waitlist.BoardingStopID, waitlist.Status, waitlist.CreatedAt,
+		)
+		if err != nil {
+			return err
+		}
+
+		_ = tx.QueryRow(r.Context(), `
+			SELECT COUNT(*)::int
+			FROM seat_waitlist
+			WHERE trip_id = $1::uuid AND status = 'WAITING' AND created_at <= $2`,
+			req.TripID, waitlist.CreatedAt,
+		).Scan(&waitlist.Position)
+
+		return nil
+	})
+
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to join waitlist: "+err.Error())
+		return
+	}
+
+	respondJSON(w, http.StatusCreated, waitlist)
+}
+
+func (s *Server) handleGetWaitlist(w http.ResponseWriter, r *http.Request) {
+	tenantContext, _ := s.resolveTenantContext(r)
+	tripID := chi.URLParam(r, "tripID")
+	if tripID == "" {
+		respondError(w, http.StatusBadRequest, "tripID is required")
+		return
+	}
+
+	waitlist := make([]SeatWaitlist, 0)
+	err := db.WithTenantTx(r.Context(), s.pool.Pool, tenantContext, func(tx pgx.Tx) error {
+		rows, err := tx.Query(r.Context(), `
+			SELECT id, tenant_id, trip_id, route_id, rider_name, rider_email, preferred_seat, boarding_stop_id, status, promoted_seat, created_at,
+			       ROW_NUMBER() OVER (ORDER BY created_at ASC) as position
+			FROM seat_waitlist
+			WHERE trip_id = $1::uuid
+			ORDER BY created_at ASC`, tripID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var witem SeatWaitlist
+			if err := rows.Scan(&witem.ID, &witem.TenantID, &witem.TripID, &witem.RouteID, &witem.RiderName, &witem.RiderEmail, &witem.PreferredSeat, &witem.BoardingStopID, &witem.Status, &witem.PromotedSeat, &witem.CreatedAt, &witem.Position); err != nil {
+				return err
+			}
+			waitlist = append(waitlist, witem)
+		}
+		return rows.Err()
+	})
+
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to query waitlist: "+err.Error())
+		return
+	}
+
+	respondJSON(w, http.StatusOK, waitlist)
+}
+
+func (s *Server) handleCancelSeat(w http.ResponseWriter, r *http.Request) {
+	tenantContext, callerTenantID := s.resolveTenantContext(r)
+	if tenantContext == "" || tenantContext == auth.RoleSuperAdmin {
+		tenantContext = callerTenantID
+	}
+
+	var req CancelSeatRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.TripID == "" || req.SeatNumber == "" {
+		respondError(w, http.StatusBadRequest, "trip_id and seat_number are required")
+		return
+	}
+
+	var promo *PromotionResult
+	err := db.WithTenantTx(r.Context(), s.pool.Pool, tenantContext, func(tx pgx.Tx) error {
+		var seatID string
+		var currentStatus string
+		if _, err := tx.Exec(r.Context(), "SET LOCAL lock_timeout = '2s'"); err != nil {
+			return err
+		}
+
+		err := tx.QueryRow(r.Context(), `
+			SELECT id, status
+			FROM seat_inventory
+			WHERE trip_id = $1::uuid AND seat_number = $2
+			FOR UPDATE`, req.TripID, req.SeatNumber,
+		).Scan(&seatID, &currentStatus)
+		if err != nil {
+			return fmt.Errorf("seat %s not found on trip %s", req.SeatNumber, req.TripID)
+		}
+
+		res, err := s.promoteWaitlistOrFree(r.Context(), tx, req.TripID, req.SeatNumber)
+		if err != nil {
+			return err
+		}
+		promo = res
+		return nil
+	})
+
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to cancel seat: "+err.Error())
+		return
+	}
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"success":        true,
+		"trip_id":        req.TripID,
+		"seat_number":    req.SeatNumber,
+		"promoted":       promo.Promoted,
+		"promoted_rider": promo.RiderName,
+		"promoted_email": promo.RiderEmail,
+		"qr_token":       promo.QRToken,
+		"message": func() string {
+			if promo.Promoted {
+				return fmt.Sprintf("Seat %s cancelled and immediately promoted to waitlisted rider %s.", req.SeatNumber, promo.RiderName)
+			}
+			return fmt.Sprintf("Seat %s cancelled and returned to available inventory.", req.SeatNumber)
+		}(),
+	})
+}
+
+func (s *Server) handleCheckInQR(w http.ResponseWriter, r *http.Request) {
+	tenantContext, callerTenantID := s.resolveTenantContext(r)
+	if tenantContext == "" || tenantContext == auth.RoleSuperAdmin {
+		tenantContext = callerTenantID
+	}
+
+	var req CheckInQRRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.QRToken == "" {
+		respondError(w, http.StatusBadRequest, "qr_token is required")
+		return
+	}
+
+	parts := strings.Split(req.QRToken, ":")
+	if len(parts) != 4 || parts[0] != "NXT-PASS" {
+		respondError(w, http.StatusUnauthorized, "invalid boarding pass signature format")
+		return
+	}
+	tripID := parts[1]
+	seatNumber := parts[2]
+
+	if req.TripID != "" && req.TripID != tripID {
+		respondError(w, http.StatusBadRequest, "boarding pass does not match requested trip")
+		return
+	}
+	if req.SeatNumber != "" && req.SeatNumber != seatNumber {
+		respondError(w, http.StatusBadRequest, "boarding pass does not match requested seat")
+		return
+	}
+
+	if !s.verifyBoardingQRToken(req.QRToken, tripID, seatNumber) {
+		respondError(w, http.StatusUnauthorized, "cryptographic HMAC validation failed: pass is invalid or tampered")
+		return
+	}
+
+	now := time.Now().UTC()
+	var resp CheckInQRResponse
+	resp.TripID = tripID
+	resp.SeatNumber = seatNumber
+
+	err := db.WithTenantTx(r.Context(), s.pool.Pool, tenantContext, func(tx pgx.Tx) error {
+		var currentStatus string
+		var isCheckedIn bool
+		err := tx.QueryRow(r.Context(), `
+			SELECT status, COALESCE(checked_in, false)
+			FROM seat_inventory
+			WHERE trip_id = $1::uuid AND seat_number = $2
+			FOR UPDATE`, tripID, seatNumber).Scan(&currentStatus, &isCheckedIn)
+		if err != nil {
+			return fmt.Errorf("seat %s on trip %s not found in inventory", seatNumber, tripID)
+		}
+
+		if currentStatus != "BOOKED" {
+			return fmt.Errorf("seat %s is not booked (current status: %s)", seatNumber, currentStatus)
+		}
+		if isCheckedIn {
+			resp.Success = true
+			resp.CheckedIn = true
+			resp.CheckedInAt = now
+			resp.Message = fmt.Sprintf("Passenger on seat %s was already checked in.", seatNumber)
+			return nil
+		}
+
+		_, err = tx.Exec(r.Context(), `
+			UPDATE seat_inventory
+			SET checked_in = true, checked_in_at = $1
+			WHERE trip_id = $2::uuid AND seat_number = $3`, now, tripID, seatNumber)
+		if err != nil {
+			return err
+		}
+
+		resp.Success = true
+		resp.CheckedIn = true
+		resp.CheckedInAt = now
+		resp.Message = fmt.Sprintf("Boarding pass verified successfully via HMAC-SHA256. Seat %s confirmed for boarding.", seatNumber)
+		return nil
+	})
+
+	if err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	respondJSON(w, http.StatusOK, resp)
 }

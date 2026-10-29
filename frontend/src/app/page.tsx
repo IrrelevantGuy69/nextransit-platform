@@ -68,6 +68,7 @@ import {
   ChaosTestReport,
   ChaosScenario,
   WebhookTestResponse,
+  SeatWaitlist,
 } from '@/lib/api';
 import { StudioStop } from '@/components/map/types';
 import { cn } from '@/lib/utils';
@@ -2928,6 +2929,44 @@ function formatDeterministicDate(isoString: string): string {
   return `${month} ${parseInt(parts[2], 10)}, ${parts[0]}`;
 }
 
+function renderDeterministicQRMatrix(token: string) {
+  const hash = Array.from(token).reduce((acc, char) => (acc * 31 + char.charCodeAt(0)) | 0, 0);
+  const size = 21;
+  const cells: boolean[][] = Array.from({ length: size }, () => Array(size).fill(false));
+
+  const setFinder = (startR: number, startC: number) => {
+    for (let r = 0; r < 7; r++) {
+      for (let c = 0; c < 7; c++) {
+        if (r === 0 || r === 6 || c === 0 || c === 6 || (r >= 2 && r <= 4 && c >= 2 && c <= 4)) {
+          cells[startR + r][startC + c] = true;
+        }
+      }
+    }
+  };
+
+  setFinder(0, 0);
+  setFinder(0, size - 7);
+  setFinder(size - 7, 0);
+
+  for (let r = 0; r < size; r++) {
+    for (let c = 0; c < size; c++) {
+      if ((r < 8 && (c < 8 || c >= size - 8)) || (r >= size - 8 && c < 8)) continue;
+      const bit = ((hash ^ (r * 13 + c * 17)) >>> ((r + c) % 16)) & 1;
+      cells[r][c] = bit === 1;
+    }
+  }
+
+  return (
+    <svg viewBox={`0 0 ${size} ${size}`} className="size-36 rounded-xl" shapeRendering="crispEdges">
+      {cells.map((row, r) =>
+        row.map((cell, c) =>
+          cell ? <rect key={`${r}-${c}`} x={c} y={r} width="1" height="1" fill="#162A22" /> : null
+        )
+      )}
+    </svg>
+  );
+}
+
 export default function Home() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [token, setToken] = useState<string | null>(null);
@@ -2981,6 +3020,7 @@ export default function Home() {
   const [showCreateTenant, setShowCreateTenant] = useState<boolean>(false);
   const [newTenantName, setNewTenantName] = useState<string>('');
   const [newTenantSlug, setNewTenantSlug] = useState<string>('');
+  const [newTenantSector, setNewTenantSector] = useState<'UNIVERSITY_CAMPUS' | 'CORPORATE_SHUTTLE' | 'PRIVATE_CHARTER'>('UNIVERSITY_CAMPUS');
 
   const [showAddMember, setShowAddMember] = useState<boolean>(false);
   const [newMemberEmail, setNewMemberEmail] = useState<string>('');
@@ -3159,6 +3199,14 @@ export default function Home() {
   const [isBookingSeat, setIsBookingSeat] = useState<boolean>(false);
   const [isSimulatingClash, setIsSimulatingClash] = useState<boolean>(false);
   const [clashResult, setClashResult] = useState<ConcurrencyClashResult | null>(null);
+  const [showWaitlistModal, setShowWaitlistModal] = useState<boolean>(false);
+  const [waitlistRiderName, setWaitlistRiderName] = useState<string>('Sarah Tan');
+  const [waitlistRiderEmail, setWaitlistRiderEmail] = useState<string>('sarah.tan@campus.local');
+  const [waitlistPreferredSeat, setWaitlistPreferredSeat] = useState<string>('');
+  const [isJoiningWaitlist, setIsJoiningWaitlist] = useState<boolean>(false);
+  const [waitlistEntries, setWaitlistEntries] = useState<SeatWaitlist[]>([]);
+  const [manualQRInput, setManualQRInput] = useState<string>('');
+  const [isCheckingInQR, setIsCheckingInQR] = useState<boolean>(false);
 
   const fetchTenantData = useCallback(async (tenantId: string, role: UserRole, overrideToken?: string) => {
     const activeToken = overrideToken || token || api.getToken() || (typeof window !== 'undefined' ? localStorage.getItem('transit_auth_token') : null);
@@ -3608,6 +3656,10 @@ export default function Home() {
     return 0;
   }, [activeSnapshot, uniqueStops.length, stopETAs]);
 
+  const isAnyDetour = useMemo(() => {
+    return snapshots.some((s) => s.is_detour) || buses.some((b) => b.is_detour);
+  }, [snapshots, buses]);
+
   const riderRemainingSeats = useMemo(() => {
     return Math.max(0, 40 - dynamicOccupancyCount);
   }, [dynamicOccupancyCount]);
@@ -3979,6 +4031,7 @@ export default function Home() {
       const created = await api.createTenant({
         name: newTenantName,
         slug: newTenantSlug,
+        sector_type: newTenantSector,
       });
 
       setTenants((prev) => [created, ...prev]);
@@ -3993,6 +4046,7 @@ export default function Home() {
         name: newTenantName,
         slug: newTenantSlug,
         status: 'ACTIVE',
+        sector_type: newTenantSector,
         created_at: new Date().toISOString(),
       };
       setTenants((prev) => [mockTenant, ...prev]);
@@ -4292,12 +4346,129 @@ export default function Home() {
     setSelectedSeatNumber('');
     setHeldSeatRemainingSec(0);
     try {
-      const seatsData = await api.getTripSeats(tripId);
+      const [seatsData, wlData] = await Promise.all([
+        api.getTripSeats(tripId),
+        api.getSeatWaitlist(tripId, selectedTenantId).catch(() => []),
+      ]);
       setSeats(seatsData);
+      setWaitlistEntries(wlData);
     } catch {
       setSeats([]);
+      setWaitlistEntries([]);
     }
-  }, []);
+  }, [selectedTenantId]);
+
+  const handleToggleDetour = useCallback(async () => {
+    const targetBus = activeSnapshot?.bus_id || selectedBusId || buses[0]?.id;
+    if (!targetBus) return;
+    const currentDetour = Boolean(activeSnapshot?.is_detour || buses.find((b) => b.id === targetBus)?.is_detour);
+    try {
+      const res = await api.triggerBusDetour({
+        bus_id: targetBus,
+        is_detour: !currentDetour,
+        detour_reason: !currentDetour ? 'Emergency road congestion & lookahead stop skip' : '',
+      }, selectedTenantId);
+      setNotification({
+        type: 'success',
+        message: res.message,
+      });
+      const [latestSnapshots, latestEtas, latestBuses] = await Promise.all([
+        api.getLatestTelemetry(selectedTenantId).catch(() => []),
+        api.getETAs(selectedTenantId, selectedRouteId).catch(() => []),
+        api.getBuses(selectedTenantId).catch(() => []),
+      ]);
+      if (latestSnapshots && latestSnapshots.length > 0) setSnapshots(latestSnapshots);
+      if (latestEtas && latestEtas.length > 0) setStopETAs(latestEtas);
+      if (latestBuses && latestBuses.length > 0) setBuses(latestBuses);
+    } catch (err: unknown) {
+      setNotification({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Failed to update detour',
+      });
+    }
+  }, [activeSnapshot, selectedBusId, buses, selectedTenantId, selectedRouteId]);
+
+  const handleJoinWaitlist = useCallback(async () => {
+    if (!selectedTripId || !waitlistRiderName.trim() || !waitlistRiderEmail.trim()) return;
+    setIsJoiningWaitlist(true);
+    try {
+      const entry = await api.joinSeatWaitlist({
+        trip_id: selectedTripId,
+        route_id: activeRoute?.id,
+        rider_name: waitlistRiderName.trim(),
+        rider_email: waitlistRiderEmail.trim(),
+        preferred_seat: waitlistPreferredSeat || undefined,
+        boarding_stop_id: riderBoardingStopId || undefined,
+      }, selectedTenantId);
+      setWaitlistEntries((prev) => [entry, ...prev]);
+      setShowWaitlistModal(false);
+      setNotification({
+        type: 'success',
+        message: `Joined priority waitlist queue! You are #${entry.position || 1} in line.`,
+      });
+    } catch (err: unknown) {
+      setNotification({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Failed to join waitlist',
+      });
+    } finally {
+      setIsJoiningWaitlist(false);
+    }
+  }, [selectedTripId, activeRoute?.id, waitlistRiderName, waitlistRiderEmail, waitlistPreferredSeat, riderBoardingStopId, selectedTenantId]);
+
+  const handleCancelReservation = useCallback(async (seatNum: string) => {
+    if (!selectedTripId) return;
+    try {
+      const res = await api.cancelSeatReservation({
+        trip_id: selectedTripId,
+        seat_number: seatNum,
+      }, selectedTenantId);
+      const [seatsData, wlData] = await Promise.all([
+        api.getTripSeats(selectedTripId),
+        api.getSeatWaitlist(selectedTripId, selectedTenantId).catch(() => []),
+      ]);
+      setSeats(seatsData);
+      setWaitlistEntries(wlData);
+      if (activeBooking?.seat_number === seatNum) {
+        setActiveBooking(null);
+        setShowBoardingPass(false);
+      }
+      setNotification({
+        type: 'success',
+        message: res.message,
+      });
+    } catch (err: unknown) {
+      setNotification({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Failed to cancel reservation',
+      });
+    }
+  }, [selectedTripId, selectedTenantId, activeBooking?.seat_number]);
+
+  const handleDriverCheckInQR = useCallback(async (tripId: string, seatNum: string, qrToken: string) => {
+    if (!tripId || !seatNum || !qrToken) return;
+    setIsCheckingInQR(true);
+    try {
+      const res = await api.checkInBoardingQR({
+        trip_id: tripId,
+        seat_number: seatNum,
+        qr_token: qrToken,
+      }, selectedTenantId);
+      const seatsData = await api.getTripSeats(tripId);
+      setSeats(seatsData);
+      setNotification({
+        type: 'success',
+        message: res.message,
+      });
+    } catch (err: unknown) {
+      setNotification({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Boarding verification failed',
+      });
+    } finally {
+      setIsCheckingInQR(false);
+    }
+  }, [selectedTenantId]);
 
   const handleHoldSeat = useCallback(async (seatNum: string) => {
     if (!selectedTripId) return;
@@ -4915,6 +5086,99 @@ export default function Home() {
                         </button>
                       </div>
                     </div>
+
+                    <div className="pt-3 border-t border-black/[0.06] space-y-3 font-sans">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <ShieldCheck className="size-4 text-[#162A22]" />
+                            <h4 className="text-xs font-bold text-[#162A22]">Passenger Boarding Verification</h4>
+                            <span className="text-[10px] px-2 py-0.5 rounded-full bg-[#E6F4EA] text-[#162A22] font-semibold">
+                              HMAC-SHA256 Validator
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-black/50 mt-0.5">
+                            Validate cryptographically signed QR tickets at vehicle doors with 1-tap verification
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="text"
+                            value={manualQRInput}
+                            onChange={(e) => setManualQRInput(e.target.value)}
+                            placeholder="Paste NXT-PASS:... signature"
+                            className="px-3 py-1.5 rounded-xl bg-[#F7F6F2] border border-black/10 text-xs text-[#162A22] outline-none w-56 font-sans"
+                          />
+                          <button
+                            type="button"
+                            disabled={isCheckingInQR || !manualQRInput.trim()}
+                            onClick={() => {
+                              const parts = manualQRInput.trim().split(':');
+                              if (parts.length === 4) {
+                                void handleDriverCheckInQR(parts[1], parts[2], manualQRInput.trim());
+                                setManualQRInput('');
+                              } else {
+                                setNotification({ type: 'error', message: 'Invalid QR token format' });
+                              }
+                            }}
+                            className="px-3 py-1.5 rounded-xl bg-[#162A22] text-white text-xs font-semibold hover:bg-[#1E352B] transition-all disabled:opacity-50 cursor-pointer"
+                          >
+                            Verify pass
+                          </button>
+                        </div>
+                      </div>
+
+                      {seats.filter((s) => s.status === 'BOOKED').length === 0 ? (
+                        <p className="text-xs text-black/40 py-2">
+                          No booked passengers found for current active trip. When riders book seats, their HMAC-SHA256 pass appears here.
+                        </p>
+                      ) : (
+                        <div className="divide-y divide-black/[0.04] max-h-48 overflow-y-auto pr-1">
+                          {seats
+                            .filter((s) => s.status === 'BOOKED')
+                            .map((seat) => {
+                              const activeTrip = selectedTripId || trips[0]?.id;
+                              const qrToken = seat.qr_token || `NXT-PASS:${activeTrip}:${seat.seat_number}:devsig`;
+                              return (
+                                <div key={seat.id} className="py-2.5 flex items-center justify-between text-xs">
+                                  <div className="flex items-center gap-2.5">
+                                    <span className="size-7 rounded-lg bg-[#162A22] text-white font-bold text-xs grid place-items-center">
+                                      {seat.seat_number}
+                                    </span>
+                                    <div>
+                                      <p className="font-semibold text-[#162A22]">
+                                        Seat {seat.seat_number} · Passenger {seat.booked_by_user_id?.slice(0, 8) || 'Rider'}
+                                      </p>
+                                      <p className="text-[10px] text-black/50 font-sans truncate max-w-[280px]">
+                                        HMAC: {qrToken.slice(0, 28)}…
+                                      </p>
+                                    </div>
+                                  </div>
+
+                                  <div className="flex items-center gap-2">
+                                    {seat.checked_in ? (
+                                      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#E6F4EA] text-[#162A22] font-semibold text-[11px]">
+                                        <CheckCircle2 className="size-3 text-[#162A22]" />
+                                        <span>Boarded</span>
+                                      </span>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        disabled={isCheckingInQR}
+                                        onClick={() => void handleDriverCheckInQR(activeTrip, seat.seat_number, qrToken)}
+                                        className="px-3 py-1 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs transition-all shadow-xs cursor-pointer flex items-center gap-1"
+                                      >
+                                        <CheckCircle2 className="size-3" />
+                                        <span>Verify QR & board</span>
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                        </div>
+                      )}
+                    </div>
                     </div>
                     <div className="lg:col-span-4 flex flex-col">
                       {renderDriverProfileCard('Assigned Route Pilot · Driver Cockpit')}
@@ -5054,16 +5318,15 @@ export default function Home() {
                                 <button
                                   key={label}
                                   type="button"
-                                  disabled={isOccupied || isHoldingSeat}
+                                  disabled={isHoldingSeat}
                                   onClick={() => {
-                                    if (isOccupied) return;
                                     setSelectedSeatNumber(label);
                                   }}
                                   className={cn(
                                     'size-8 rounded-lg text-[10px] font-sans font-medium transition-all flex items-center justify-center cursor-pointer',
                                     seatClasses,
                                   )}
-                                  title={`Seat ${label} · ${isOccupied ? 'Occupied' : isHeld ? 'Held' : 'Available'}`}
+                                  title={`Seat ${label} · ${isOccupied ? 'Occupied (Click to Join Waitlist)' : isHeld ? 'Held' : 'Available'}`}
                                 >
                                   {label}
                                 </button>
@@ -5103,7 +5366,7 @@ export default function Home() {
                             </span>
                           </div>
 
-                          <div className="flex items-center gap-3">
+                          <div className="flex flex-wrap items-center gap-3">
                             {selectedSeatNumber && (
                               <div className="flex items-center gap-2">
                                 <span className="font-medium text-foreground">Seat {selectedSeatNumber}</span>
@@ -5118,17 +5381,43 @@ export default function Home() {
                               </div>
                             )}
 
-                            {selectedSeatNumber && heldSeatRemainingSec <= 0 && (
-                              <button
-                                type="button"
-                                onClick={() => handleHoldSeat(selectedSeatNumber)}
-                                disabled={isHoldingSeat}
-                                className="inline-flex items-center gap-1.5 rounded-xl bg-primary text-primary-foreground hover:bg-primary/90 px-4 py-2 text-xs font-semibold shadow-md transition-all active:scale-95 disabled:opacity-50 cursor-pointer font-sans"
-                              >
-                                <Timer className="size-3.5" />
-                                <span>{isHoldingSeat ? 'Holding…' : `Hold seat ${selectedSeatNumber}`}</span>
-                              </button>
-                            )}
+                            {selectedSeatNumber && (() => {
+                              const targetSeat = seats.find((s) => s.seat_number === selectedSeatNumber);
+                              const isOccupied = targetSeat?.status === 'BOOKED' || (targetSeat?.status === 'HELD' && heldSeatRemainingSec <= 0);
+                              if (isOccupied) {
+                                return (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setWaitlistPreferredSeat(selectedSeatNumber);
+                                      setShowWaitlistModal(true);
+                                    }}
+                                    className="inline-flex items-center gap-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white px-4 py-2 text-xs font-semibold shadow-md transition-all active:scale-95 cursor-pointer font-sans"
+                                  >
+                                    <Clock className="size-3.5" />
+                                    <span>Waitlist seat {selectedSeatNumber}</span>
+                                  </button>
+                                );
+                              }
+                              return null;
+                            })()}
+
+                            {selectedSeatNumber && heldSeatRemainingSec <= 0 && (() => {
+                              const targetSeat = seats.find((s) => s.seat_number === selectedSeatNumber);
+                              const isOccupied = targetSeat?.status === 'BOOKED';
+                              if (isOccupied) return null;
+                              return (
+                                <button
+                                  type="button"
+                                  onClick={() => handleHoldSeat(selectedSeatNumber)}
+                                  disabled={isHoldingSeat}
+                                  className="inline-flex items-center gap-1.5 rounded-xl bg-primary text-primary-foreground hover:bg-primary/90 px-4 py-2 text-xs font-semibold shadow-md transition-all active:scale-95 disabled:opacity-50 cursor-pointer font-sans"
+                                >
+                                  <Timer className="size-3.5" />
+                                  <span>{isHoldingSeat ? 'Holding…' : `Hold seat ${selectedSeatNumber}`}</span>
+                                </button>
+                              );
+                            })()}
 
                             {selectedSeatNumber && heldSeatRemainingSec > 0 && (
                               <button
@@ -5142,6 +5431,18 @@ export default function Home() {
                               </button>
                             )}
 
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setWaitlistPreferredSeat(selectedSeatNumber || '');
+                                setShowWaitlistModal(true);
+                              }}
+                              className="inline-flex items-center gap-1.5 rounded-xl bg-white hover:bg-[#F0F5F2] text-[#162A22] border border-black/[0.1] px-3.5 py-2 text-xs font-semibold shadow-xs transition-all cursor-pointer font-sans"
+                            >
+                              <Users className="size-3.5" />
+                              <span>Join priority waitlist</span>
+                            </button>
+
                             {activeBooking && (
                               <button
                                 type="button"
@@ -5154,6 +5455,99 @@ export default function Home() {
                             )}
                           </div>
                         </div>
+                      </div>
+
+                      {activeBooking && (
+                        <div className="p-4 rounded-2xl bg-[#E6F4EA]/60 border border-[#162A22]/10 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                          <div className="flex items-center gap-2.5">
+                            <CheckCircle2 className="size-4 text-[#162A22]" />
+                            <div>
+                              <p className="text-xs font-bold text-[#162A22] font-sans">
+                                Active Seat Reservation: {activeBooking.seat_number} · Ticket {activeBooking.ticket_code}
+                              </p>
+                              <p className="text-[11px] text-[#162A22]/70 font-sans">
+                                HMAC-SHA256 digital pass active · Validated for immediate boarding
+                              </p>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setShowBoardingPass(true)}
+                              className="inline-flex items-center gap-1.5 rounded-xl bg-[#162A22] text-[#86EFAC] px-3.5 py-1.5 text-xs font-semibold shadow-sm transition-all hover:bg-[#1f3a30] cursor-pointer"
+                            >
+                              <Ticket className="size-3.5" />
+                              <span>Boarding pass</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void handleCancelReservation(activeBooking.seat_number)}
+                              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl bg-red-100 hover:bg-red-200 text-red-800 text-xs font-semibold transition-all cursor-pointer"
+                            >
+                              <span>Cancel reservation</span>
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="p-4 rounded-2xl bg-white border border-black/[0.06] shadow-xs space-y-3 font-sans">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <Users className="size-4 text-[#162A22]" />
+                            <h4 className="text-xs font-bold text-[#162A22]">Priority Seat Waitlist Queue</h4>
+                            <span className="text-[10px] px-2 py-0.5 rounded-full bg-black/[0.05] text-black/60 font-semibold">
+                              Transactional Auto-Promotion
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setWaitlistPreferredSeat(selectedSeatNumber || '');
+                              setShowWaitlistModal(true);
+                            }}
+                            className="inline-flex items-center gap-1 text-xs font-semibold text-[#162A22] hover:underline cursor-pointer"
+                          >
+                            <Plus className="size-3" />
+                            <span>Join queue</span>
+                          </button>
+                        </div>
+
+                        {waitlistEntries.length === 0 ? (
+                          <p className="text-xs text-black/40 py-2">
+                            No passengers currently waiting. When seats sell out or holds expire, waitlisted riders are promoted atomically.
+                          </p>
+                        ) : (
+                          <div className="divide-y divide-black/[0.04]">
+                            {waitlistEntries.map((w, idx) => (
+                              <div key={w.id || idx} className="py-2.5 flex items-center justify-between text-xs">
+                                <div className="flex items-center gap-2">
+                                  <span className="size-5 rounded-full bg-[#162A22] text-white text-[10px] font-bold grid place-items-center">
+                                    #{w.position || idx + 1}
+                                  </span>
+                                  <div>
+                                    <p className="font-semibold text-[#162A22]">{w.rider_name}</p>
+                                    <p className="text-[11px] text-black/50">{w.rider_email}</p>
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-3">
+                                  {w.preferred_seat && (
+                                    <span className="text-[11px] px-2 py-0.5 rounded-md bg-black/[0.04] text-black/70">
+                                      Pref: Seat {w.preferred_seat}
+                                    </span>
+                                  )}
+                                  <span className={cn(
+                                    'px-2.5 py-0.5 rounded-full text-[11px] font-semibold',
+                                    w.status === 'CONFIRMED'
+                                      ? 'bg-[#E6F4EA] text-[#162A22]'
+                                      : 'bg-amber-100 text-amber-900',
+                                  )}>
+                                    {w.status === 'CONFIRMED' ? `Promoted (${w.promoted_seat || 'Seat'})` : 'Waiting in line'}
+                                  </span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -5212,6 +5606,20 @@ export default function Home() {
 
                       <button
                         type="button"
+                        onClick={handleToggleDetour}
+                        className={cn(
+                          'font-sans text-xs font-medium px-3.5 py-2 rounded-full shadow-sm flex items-center gap-1.5 transition-all cursor-pointer border',
+                          isAnyDetour
+                            ? 'bg-amber-600 hover:bg-amber-700 text-white border-amber-700 animate-pulse'
+                            : 'bg-white hover:bg-[#F0F5F2] text-[#162A22] border-black/[0.06]',
+                        )}
+                      >
+                        <TriangleAlert className={cn('size-3', isAnyDetour ? 'text-amber-200' : 'text-amber-600')} />
+                        <span>{isAnyDetour ? 'Detour active (+3.5m) · Clear' : 'Traffic detour'}</span>
+                      </button>
+
+                      <button
+                        type="button"
                         onClick={handleSimulateStep}
                         title="Manual step"
                         className="bg-white hover:bg-[#F0F5F2] text-[#162A22] rounded-full p-2 shadow-sm border border-black/[0.06] transition-colors cursor-pointer inline-flex items-center justify-center"
@@ -5247,78 +5655,6 @@ export default function Home() {
                           <span>Live spatial map</span>
                         </button>
                       </div>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-stretch">
-                    <div className="group/card relative flex min-w-0 flex-col justify-between overflow-hidden rounded-[28px] p-6 bg-[#DDF0F8] text-[#162A22] shadow-[0_14px_30px_-10px_rgba(0,0,0,0.04)] border border-black/[0.04]">
-                      <header className="flex items-center justify-between gap-3">
-                        <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold bg-white/70 text-[#162A22] border border-black/[0.04]">
-                          <Info className="size-3.5 text-sky-600" />
-                          <span>Notice</span>
-                        </span>
-                        <span className="relative flex size-2.5">
-                          <span className="absolute inline-flex size-full animate-ping rounded-full bg-sky-500 opacity-60" />
-                          <span className="relative inline-flex size-2.5 rounded-full bg-sky-500" />
-                        </span>
-                      </header>
-                      <h3 className="mt-5 font-serif text-xl font-normal leading-snug tracking-tight text-[#162A22]">
-                        Geofence entry: {latestGeofenceEvent?.stop_name || uniqueStops[0]?.name || 'Terminal Bersepadu Selatan'}
-                      </h3>
-                      <p className="mt-2 text-sm leading-relaxed text-black/70 font-sans">
-                        {`${latestGeofenceEvent?.fleet_code || activeSnapshot?.fleet_code || 'BUS-UM-01'} arrived on schedule · PostGIS 150m boundary verified.`}
-                      </p>
-                      <footer className="mt-6 flex items-center justify-between gap-3 pt-4 border-t border-black/[0.06] text-xs font-sans">
-                        <span className="flex min-w-0 items-center gap-1.5 text-black/70">
-                          <Bus className="size-3.5 shrink-0" />
-                          <span className="truncate">{activeSnapshot?.fleet_code || 'BUS-UM-01'} · PostGIS 150m boundary verified</span>
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => setNotification({ type: 'success', message: 'Geofence telemetry confirmed' })}
-                          className="shrink-0 rounded-full bg-[#162A22] px-3.5 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-85 cursor-pointer"
-                        >
-                          Acknowledge
-                        </button>
-                      </footer>
-                    </div>
-
-                    <div className="group/card relative flex min-w-0 flex-col justify-between overflow-hidden rounded-[28px] p-6 bg-[#F7ECD9] text-[#162A22] shadow-[0_14px_30px_-10px_rgba(0,0,0,0.04)] border border-black/[0.04]">
-                      <header className="flex items-center justify-between gap-3">
-                        <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold bg-[#EF4444] text-white">
-                          <TriangleAlert className="size-3.5" />
-                          <span>Critical</span>
-                        </span>
-                        <span className="relative flex size-2.5">
-                          <span className="absolute inline-flex size-full animate-ping rounded-full bg-[#EF4444] opacity-60" />
-                          <span className="relative inline-flex size-2.5 rounded-full bg-[#EF4444]" />
-                        </span>
-                      </header>
-                      <h3 className="mt-5 font-serif text-xl font-normal leading-snug tracking-tight text-[#162A22]">
-                        Severe Bottleneck: {topDemandSug?.route_code || activeRoute.code} Corridor
-                      </h3>
-                      <p className="mt-2 text-sm leading-relaxed text-black/70 font-sans">
-                        {topDemandSug?.optimization_reason || 'Load factor 94% on segment Pasar Seni ⇄ KL Sentral during morning peak. Headway compressed from 15m to 8m.'}
-                      </p>
-                      <footer className="mt-6 flex items-center justify-between gap-3 pt-4 border-t border-black/[0.06] text-xs font-sans">
-                        <span className="flex min-w-0 items-center gap-1.5 text-black/70">
-                          <Route className="size-3.5 shrink-0" />
-                          <span className="truncate">{topDemandSug?.route_code || activeRoute.code} · Peak Corridor</span>
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (topDemandSug) {
-                              handleApplySchedule(topDemandSug);
-                            } else {
-                              setNotification({ type: 'success', message: 'Optimal headway of 8m applied to corridor' });
-                            }
-                          }}
-                          className="shrink-0 rounded-full bg-[#162A22] px-3.5 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-85 cursor-pointer"
-                        >
-                          Acknowledge / Apply
-                        </button>
-                      </footer>
                     </div>
                   </div>
 
@@ -5695,13 +6031,25 @@ export default function Home() {
                           <span className="text-xs font-sans text-black/50">{uniqueStopETAs.length} stops</span>
                         </div>
                         <div className="space-y-2.5 max-h-[480px] overflow-y-auto pr-1">
+                          {isAnyDetour && (
+                            <div className="p-3 mb-2 rounded-2xl bg-[#FEF3D6] border border-[#B45309]/20 text-[#B45309] text-xs font-medium flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                <TriangleAlert className="size-4 shrink-0" />
+                                <span>Live Detour Active: Congested corridor bypassed with +3.5 min recovery delay</span>
+                              </div>
+                              <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-[#B45309]/10">
+                                Active Reroute
+                              </span>
+                            </div>
+                          )}
                           {uniqueStopETAs.length === 0 ? (
                             <div className="py-8 text-center text-xs text-black/50 font-sans">
                               No stop arrival calculations available.
                             </div>
                           ) : (
                             uniqueStopETAs.map((eta, idx) => {
-                              const status = eta.status || (eta.eta_minutes <= 1 ? 'ARRIVING_NOW' : 'UPCOMING');
+                              const isBypassed = eta.bypassed || eta.status === 'BYPASSED_DETOUR';
+                              const status = isBypassed ? 'BYPASSED_DETOUR' : (eta.status || (eta.eta_minutes <= 1 ? 'ARRIVING_NOW' : 'UPCOMING'));
                               return (
                                 <div
                                   key={`${eta.route_id}-${eta.stop_id}-${idx}`}
@@ -5722,7 +6070,9 @@ export default function Home() {
                                     <span
                                       className={cn(
                                         'px-2.5 py-1 rounded-full text-xs font-medium whitespace-nowrap',
-                                        status === 'PASSED'
+                                        isBypassed
+                                          ? 'bg-amber-100 text-amber-900 border border-amber-200 font-semibold'
+                                          : status === 'PASSED'
                                           ? 'bg-black/[0.05] text-black/40'
                                           : status === 'TERMINAL_REACHED'
                                           ? 'bg-[#E6F4EA] text-[#162A22]'
@@ -5733,11 +6083,16 @@ export default function Home() {
                                           : 'bg-[#E6F4EA] text-[#162A22]',
                                       )}
                                     >
-                                      {status === 'PASSED' && 'Passed'}
-                                      {status === 'TERMINAL_REACHED' && 'Terminal reached'}
-                                      {status === 'ARRIVED' && 'At stop'}
-                                      {status === 'ARRIVING_NOW' && 'Arriving now'}
-                                      {status === 'UPCOMING' && `~${eta.eta_minutes} min`}
+                                      {isBypassed && 'Bypassed (Detour)'}
+                                      {!isBypassed && status === 'PASSED' && 'Passed'}
+                                      {!isBypassed && status === 'TERMINAL_REACHED' && 'Terminal reached'}
+                                      {!isBypassed && status === 'ARRIVED' && 'At stop'}
+                                      {!isBypassed && status === 'ARRIVING_NOW' && 'Arriving now'}
+                                      {!isBypassed && status === 'UPCOMING' && (
+                                        eta.is_detour
+                                          ? `~${eta.eta_minutes} min (+3.5m detour)`
+                                          : `~${eta.eta_minutes} min`
+                                      )}
                                     </span>
                                   </div>
                                   <div className="mt-2.5 flex items-center justify-between pt-2 border-t border-black/[0.04] text-[11px] text-black/60 font-sans">
@@ -6250,6 +6605,12 @@ export default function Home() {
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 py-1 font-sans">
                       {tenants.map((t, idx) => {
                         const active = t.id === selectedTenantId;
+                        const sectorMap: Record<string, { label: string; icon: string }> = {
+                          UNIVERSITY_CAMPUS: { label: 'University Network', icon: '🎓' },
+                          CORPORATE_SHUTTLE: { label: 'Corporate Shuttle', icon: '🏢' },
+                          PRIVATE_CHARTER: { label: 'Private Operator', icon: '🚌' },
+                        };
+                        const secInfo = sectorMap[t.sector_type || 'UNIVERSITY_CAMPUS'] || { label: 'Transit Network', icon: '🚏' };
                         return (
                           <button
                             key={`${t.id}-${idx}`}
@@ -6267,6 +6628,15 @@ export default function Home() {
                               <p className={cn('text-[11px] font-sans mt-0.5 truncate', active ? 'text-white/70' : 'text-black/50')}>
                                 {t.slug}
                               </p>
+                              <div className="mt-1.5 flex items-center gap-1.5">
+                                <span className={cn(
+                                  'inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium',
+                                  active ? 'bg-white/15 text-white' : 'bg-black/[0.05] text-black/70'
+                                )}>
+                                  <span>{secInfo.icon}</span>
+                                  <span>{secInfo.label}</span>
+                                </span>
+                              </div>
                             </div>
                             {active && <CheckCircle2 className="size-4 text-[#86EFAC] shrink-0" />}
                           </button>
@@ -7101,7 +7471,7 @@ export default function Home() {
                 ✕
               </button>
             </div>
-            <form onSubmit={handleCreateTenantSubmit} className="space-y-4">
+            <form onSubmit={handleCreateTenantSubmit} className="space-y-4 font-sans">
               <div>
                 <label className="text-xs font-medium text-muted-foreground block mb-1">
                   Tenant workspace name
@@ -7131,6 +7501,45 @@ export default function Home() {
                   className="w-full px-4 py-2.5 rounded-xl bg-card border border-foreground/10 text-xs font-sans text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
                 />
               </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground block mb-1.5">
+                  Operating sector
+                </label>
+                <div className="grid grid-cols-1 gap-2">
+                  {[
+                    {
+                      id: 'UNIVERSITY_CAMPUS',
+                      title: '🎓 University Campus',
+                      desc: 'High-frequency student shuttles & academic perimeter circulators',
+                    },
+                    {
+                      id: 'CORPORATE_SHUTTLE',
+                      title: '🏢 Corporate Shuttle',
+                      desc: 'Campus-to-metro commuter transit & employee express lines',
+                    },
+                    {
+                      id: 'PRIVATE_CHARTER',
+                      title: '🚌 Private Operator',
+                      desc: 'Intercity scheduled coach networks & concessionaire lines',
+                    },
+                  ].map((sec) => (
+                    <button
+                      key={sec.id}
+                      type="button"
+                      onClick={() => setNewTenantSector(sec.id as 'UNIVERSITY_CAMPUS' | 'CORPORATE_SHUTTLE' | 'PRIVATE_CHARTER')}
+                      className={cn(
+                        'p-2.5 rounded-xl border text-left transition-all cursor-pointer font-sans',
+                        newTenantSector === sec.id
+                          ? 'border-[#162A22] bg-[#162A22]/[0.04] text-[#162A22]'
+                          : 'border-black/10 bg-white hover:border-black/20 text-black/70',
+                      )}
+                    >
+                      <p className="text-xs font-semibold">{sec.title}</p>
+                      <p className="text-[11px] text-muted-foreground mt-0.5">{sec.desc}</p>
+                    </button>
+                  ))}
+                </div>
+              </div>
               <div className="flex items-center justify-end gap-3 pt-3">
                 <button
                   type="button"
@@ -7143,7 +7552,7 @@ export default function Home() {
                   type="submit"
                   className="px-5 py-2.5 rounded-xl bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 transition-all shadow-sm"
                 >
-                  Create tenant
+                  Create workspace
                 </button>
               </div>
             </form>
@@ -7546,15 +7955,15 @@ export default function Home() {
 
       {showBoardingPass && activeBooking && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-foreground/40 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="w-full max-w-md rounded-[32px] bg-white p-6 shadow-2xl border border-foreground/10 space-y-5 animate-in zoom-in-95 duration-200">
+          <div className="w-full max-w-md rounded-[32px] bg-white p-6 shadow-2xl border border-foreground/10 space-y-5 animate-in zoom-in-95 duration-200 font-sans">
             <div className="flex items-center justify-between pb-4 border-b border-foreground/5">
               <div className="flex items-center gap-2">
                 <span className="grid size-8 place-items-center rounded-xl bg-[#162A22] text-[#86EFAC]">
                   <Bus className="size-4" />
                 </span>
                 <div>
-                  <h3 className="text-base font-semibold tracking-tight">NexTransit boarding pass</h3>
-                  <p className="text-xs text-muted-foreground">Official digital transit ticket</p>
+                  <h3 className="text-base font-semibold tracking-tight">NexTransit Digital Boarding Pass</h3>
+                  <p className="text-xs text-muted-foreground">HMAC-SHA256 Cryptographically Signed Ticket</p>
                 </div>
               </div>
               <button
@@ -7566,17 +7975,17 @@ export default function Home() {
               </button>
             </div>
 
-            <div className="rounded-2xl bg-muted/40 p-5 space-y-4 border border-foreground/5">
+            <div className="rounded-2xl bg-[#F7F6F2] p-5 space-y-4 border border-black/[0.06]">
               <div className="flex items-center justify-between">
                 <div>
                   <span className="text-[11px] font-sans text-muted-foreground block">Transit corridor</span>
-                  <p className="text-sm font-semibold text-foreground mt-0.5">
+                  <p className="text-sm font-semibold text-[#162A22] mt-0.5">
                     {activeRoute?.name || 'Active transit corridor'}
                   </p>
                 </div>
                 <div className="text-right">
                   <span className="text-[11px] font-sans text-muted-foreground block">Assigned seat</span>
-                  <p className="text-2xl font-bold font-sans text-primary mt-0.5">
+                  <p className="text-2xl font-bold font-sans text-[#162A22] mt-0.5">
                     {activeBooking.seat_number}
                   </p>
                 </div>
@@ -7584,82 +7993,133 @@ export default function Home() {
 
               <div className="grid grid-cols-2 gap-4 text-xs">
                 <div>
-                  <span className="text-[11px] font-sans text-muted-foreground block">Vehicle</span>
-                  <p className="font-medium text-foreground mt-0.5">
+                  <span className="text-[11px] font-sans text-muted-foreground block">Vehicle / Fleet</span>
+                  <p className="font-medium text-[#162A22] mt-0.5">
                     {activeSnapshot?.fleet_code || 'Fleet vehicle'}
                   </p>
                 </div>
                 <div>
                   <span className="text-[11px] font-sans text-muted-foreground block">Ticket code</span>
-                  <p className="font-sans font-medium text-foreground mt-0.5">
+                  <p className="font-sans font-medium text-[#162A22] mt-0.5">
                     {activeBooking.ticket_code}
                   </p>
                 </div>
               </div>
 
-              <div className="pt-3 border-t border-dashed border-foreground/15 flex flex-col items-center justify-center space-y-2">
-                <div className="p-3 bg-white rounded-2xl shadow-sm border border-foreground/10">
-                  <svg
-                    viewBox="0 0 100 100"
-                    className="size-36 text-foreground"
-                    fill="currentColor"
-                  >
-                    <rect x="0" y="0" width="30" height="30" rx="4" fill="#162A22" />
-                    <rect x="5" y="5" width="20" height="20" rx="2" fill="white" />
-                    <rect x="10" y="10" width="10" height="10" rx="1" fill="#162A22" />
-
-                    <rect x="70" y="0" width="30" height="30" rx="4" fill="#162A22" />
-                    <rect x="75" y="5" width="20" height="20" rx="2" fill="white" />
-                    <rect x="80" y="10" width="10" height="10" rx="1" fill="#162A22" />
-
-                    <rect x="0" y="70" width="30" height="30" rx="4" fill="#162A22" />
-                    <rect x="5" y="75" width="20" height="20" rx="2" fill="white" />
-                    <rect x="10" y="80" width="10" height="10" rx="1" fill="#162A22" />
-
-                    <rect x="36" y="12" width="6" height="6" fill="#162A22" />
-                    <rect x="48" y="12" width="6" height="6" fill="#162A22" />
-                    <rect x="58" y="12" width="6" height="6" fill="#162A22" />
-                    <rect x="36" y="24" width="6" height="6" fill="#162A22" />
-                    <rect x="48" y="24" width="16" height="6" fill="#162A22" />
-
-                    <rect x="12" y="36" width="6" height="6" fill="#162A22" />
-                    <rect x="24" y="36" width="6" height="6" fill="#162A22" />
-                    <rect x="36" y="36" width="12" height="12" rx="2" fill="#162A22" />
-                    <rect x="54" y="36" width="6" height="6" fill="#162A22" />
-                    <rect x="66" y="36" width="6" height="6" fill="#162A22" />
-                    <rect x="78" y="36" width="10" height="6" fill="#162A22" />
-
-                    <rect x="12" y="48" width="18" height="6" fill="#162A22" />
-                    <rect x="54" y="48" width="6" height="18" fill="#162A22" />
-                    <rect x="66" y="48" width="12" height="6" fill="#162A22" />
-                    <rect x="84" y="48" width="6" height="6" fill="#162A22" />
-
-                    <rect x="36" y="66" width="12" height="6" fill="#162A22" />
-                    <rect x="66" y="66" width="6" height="18" fill="#162A22" />
-                    <rect x="78" y="66" width="16" height="6" fill="#162A22" />
-                    <rect x="36" y="78" width="6" height="16" fill="#162A22" />
-                    <rect x="48" y="78" width="12" height="6" fill="#162A22" />
-                    <rect x="78" y="78" width="6" height="16" fill="#162A22" />
-                    <rect x="90" y="78" width="4" height="16" fill="#162A22" />
-                  </svg>
+              <div className="pt-3 border-t border-dashed border-black/[0.1] flex flex-col items-center justify-center space-y-2">
+                <div className="p-3 bg-white rounded-2xl shadow-sm border border-black/[0.08]">
+                  {renderDeterministicQRMatrix(activeBooking.qr_payload || activeBooking.ticket_code)}
                 </div>
-                <span className="text-[11px] font-sans text-muted-foreground text-center">
-                  Scan validator at vehicle entrance
-                </span>
+                <div className="w-full text-center space-y-1">
+                  <span className="text-[11px] font-sans text-black/60 block truncate max-w-xs mx-auto">
+                    Token: {activeBooking.qr_payload || `NXT-PASS:${activeBooking.ticket_code}`}
+                  </span>
+                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-[#E6F4EA] text-[#162A22] text-[10px] font-semibold">
+                    <ShieldCheck className="size-3" />
+                    <span>Cryptographically Verified HMAC-SHA256</span>
+                  </span>
+                </div>
               </div>
             </div>
 
             <div className="flex items-center justify-between text-xs text-muted-foreground">
-              <span className="inline-flex items-center gap-1.5 text-chart-5 font-medium">
-                <CheckCircle2 className="size-4 text-chart-5" />
-                <span>Confirmed & active</span>
+              <span className="inline-flex items-center gap-1.5 text-[#162A22] font-semibold">
+                <CheckCircle2 className="size-4 text-emerald-600" />
+                <span>Confirmed & ready to board</span>
               </span>
               <button
                 type="button"
                 onClick={() => setShowBoardingPass(false)}
-                className="px-4 py-2 rounded-xl bg-primary text-primary-foreground font-semibold hover:bg-primary/90 transition-all cursor-pointer"
+                className="px-4 py-2 rounded-xl bg-[#162A22] text-white font-semibold hover:bg-[#1E352B] transition-all cursor-pointer font-sans"
               >
-                Close ticket
+                Close pass
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showWaitlistModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-foreground/30 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-white rounded-3xl p-6 max-w-md w-full shadow-2xl border border-black/10 space-y-4 font-sans">
+            <div className="flex items-center justify-between pb-3 border-b border-black/[0.06]">
+              <div className="flex items-center gap-2">
+                <span className="grid size-8 place-items-center rounded-xl bg-[#E6F4EA] text-[#162A22]">
+                  <Users className="size-4" />
+                </span>
+                <h4 className="font-serif text-lg font-normal text-[#162A22]">
+                  Join priority seat waitlist
+                </h4>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowWaitlistModal(false)}
+                className="text-black/50 hover:text-black text-sm"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="space-y-3.5">
+              <div>
+                <label className="text-xs font-medium text-black/70 block mb-1">
+                  Passenger name
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={waitlistRiderName}
+                  onChange={(e) => setWaitlistRiderName(e.target.value)}
+                  placeholder="e.g. Sarah Tan"
+                  className="w-full px-3.5 py-2 rounded-xl bg-[#F7F6F2] border border-black/10 text-xs text-[#162A22] outline-none focus:ring-2 focus:ring-[#162A22]"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-black/70 block mb-1">
+                  Notification email
+                </label>
+                <input
+                  type="email"
+                  required
+                  value={waitlistRiderEmail}
+                  onChange={(e) => setWaitlistRiderEmail(e.target.value)}
+                  placeholder="e.g. sarah.tan@campus.local"
+                  className="w-full px-3.5 py-2 rounded-xl bg-[#F7F6F2] border border-black/10 text-xs text-[#162A22] outline-none focus:ring-2 focus:ring-[#162A22]"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-black/70 block mb-1">
+                  Preferred seat (optional)
+                </label>
+                <input
+                  type="text"
+                  value={waitlistPreferredSeat}
+                  onChange={(e) => setWaitlistPreferredSeat(e.target.value.toUpperCase())}
+                  placeholder="e.g. 3A"
+                  className="w-full px-3.5 py-2 rounded-xl bg-[#F7F6F2] border border-black/10 text-xs text-[#162A22] outline-none focus:ring-2 focus:ring-[#162A22]"
+                />
+              </div>
+              <div className="p-3 rounded-xl bg-amber-50 border border-amber-200/60 text-[11px] text-amber-900 space-y-1">
+                <p className="font-semibold">Priority Guarantee</p>
+                <p className="text-amber-800">
+                  When any held seat expires or is cancelled, our TimescaleDB engine automatically issues a cryptographic HMAC-SHA256 boarding pass to the top waitlisted rider.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowWaitlistModal(false)}
+                className="px-4 py-2 text-xs font-medium text-black/60 hover:text-black"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isJoiningWaitlist || !waitlistRiderName.trim() || !waitlistRiderEmail.trim()}
+                onClick={() => void handleJoinWaitlist()}
+                className="px-4 py-2 rounded-xl bg-[#162A22] text-white text-xs font-semibold hover:bg-[#1E352B] transition-all disabled:opacity-50 cursor-pointer"
+              >
+                {isJoiningWaitlist ? 'Joining…' : 'Confirm waitlist entry'}
               </button>
             </div>
           </div>

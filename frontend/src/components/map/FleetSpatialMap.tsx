@@ -478,6 +478,50 @@ export default function FleetSpatialMap({
           })}
 
         {showRoutes &&
+          (snapshots || [])
+            .filter((b) => b && b.is_detour && b.detour_lat && b.detour_lng)
+            .map((bus) => {
+              const detourPath: LatLngTuple[] = getSplinePoints([
+                [bus.latitude, bus.longitude],
+                [bus.detour_lat!, bus.detour_lng!],
+                [bus.detour_lat! + 0.003, bus.detour_lng! + 0.003],
+              ]);
+              return (
+                <React.Fragment key={`bus-detour-${bus.bus_id}`}>
+                  <Polyline
+                    positions={detourPath}
+                    pathOptions={{
+                      color: '#D97706',
+                      weight: 4,
+                      dashArray: '8, 8',
+                      opacity: 0.95,
+                      lineJoin: 'round',
+                      lineCap: 'round',
+                    }}
+                    interactive={false}
+                  />
+                  <CircleMarker
+                    center={[bus.detour_lat!, bus.detour_lng!]}
+                    radius={6}
+                    pathOptions={{
+                      color: '#D97706',
+                      fillColor: '#FDE68A',
+                      fillOpacity: 1,
+                      weight: 2,
+                    }}
+                  >
+                    <Tooltip direction="top" offset={[0, -6]}>
+                      <div className="text-center font-sans">
+                        <p className="font-semibold text-xs leading-tight text-amber-900">Detour Waypoint</p>
+                        <p className="text-[10px] text-amber-700 font-medium">+3.5 min traffic bypass</p>
+                      </div>
+                    </Tooltip>
+                  </CircleMarker>
+                </React.Fragment>
+              );
+            })}
+
+        {showRoutes &&
           (multiRoutePaths || []).map((rp) => {
             if (!rp.isActive) return null;
             return (rp.stops || []).map((stop, sIdx) => {
