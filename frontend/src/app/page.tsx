@@ -107,6 +107,23 @@ const DEFAULT_DEMO_TENANTS: Tenant[] = [
     name: 'Universiti Malaya Shuttle',
     slug: 'um-malaysia',
     status: 'ACTIVE',
+    sector_type: 'UNIVERSITY_CAMPUS',
+    created_at: '2026-10-20T12:00:00.000Z',
+  },
+  {
+    id: '66666666-6666-6666-6666-666666666666',
+    name: 'Apex Tech Park Express',
+    slug: 'apex-tech-park',
+    status: 'ACTIVE',
+    sector_type: 'CORPORATE_SHUTTLE',
+    created_at: '2026-10-20T12:00:00.000Z',
+  },
+  {
+    id: '77777777-7777-7777-7777-777777777777',
+    name: 'Himalayan Alpine Charter',
+    slug: 'himalayan-alpine',
+    status: 'ACTIVE',
+    sector_type: 'PRIVATE_CHARTER',
     created_at: '2026-10-20T12:00:00.000Z',
   },
   {
@@ -114,6 +131,7 @@ const DEFAULT_DEMO_TENANTS: Tenant[] = [
     name: 'NUS Campus Shuttle',
     slug: 'nus-singapore',
     status: 'ACTIVE',
+    sector_type: 'UNIVERSITY_CAMPUS',
     created_at: '2026-10-20T12:00:00.000Z',
   },
   {
@@ -121,6 +139,7 @@ const DEFAULT_DEMO_TENANTS: Tenant[] = [
     name: 'UTokyo Campus Transit',
     slug: 'utokyo-japan',
     status: 'ACTIVE',
+    sector_type: 'UNIVERSITY_CAMPUS',
     created_at: '2026-10-20T12:00:00.000Z',
   },
   {
@@ -128,6 +147,7 @@ const DEFAULT_DEMO_TENANTS: Tenant[] = [
     name: 'IIT Delhi Campus Transit',
     slug: 'iit-delhi-india',
     status: 'ACTIVE',
+    sector_type: 'UNIVERSITY_CAMPUS',
     created_at: '2026-10-20T12:00:00.000Z',
   },
   {
@@ -135,6 +155,7 @@ const DEFAULT_DEMO_TENANTS: Tenant[] = [
     name: 'IISc Bangalore Green Shuttle',
     slug: 'iisc-bangalore-india',
     status: 'ACTIVE',
+    sector_type: 'UNIVERSITY_CAMPUS',
     created_at: '2026-10-20T12:00:00.000Z',
   },
 ];
@@ -267,6 +288,58 @@ const DEFAULT_DEMO_USERS: Record<string, User[]> = {
       email: 'student@iisc.ac.in',
       role: 'RIDER',
       full_name: 'Pooja Hegde (PhD Fellow)',
+      created_at: '2026-10-20T12:00:00.000Z',
+    },
+  ],
+  '66666666-6666-6666-6666-666666666666': [
+    {
+      id: 'u-601',
+      tenant_id: '66666666-6666-6666-6666-666666666666',
+      email: 'admin@apextech.com',
+      role: 'OPERATOR_ADMIN',
+      full_name: 'Priya Nair (Corporate Transit Manager)',
+      created_at: '2026-10-20T12:00:00.000Z',
+    },
+    {
+      id: 'u-602',
+      tenant_id: '66666666-6666-6666-6666-666666666666',
+      email: 'driver@apextech.com',
+      role: 'DRIVER',
+      full_name: 'David Chen (Executive Fleet Captain)',
+      created_at: '2026-10-20T12:00:00.000Z',
+    },
+    {
+      id: 'u-603',
+      tenant_id: '66666666-6666-6666-6666-666666666666',
+      email: 'employee@apextech.com',
+      role: 'RIDER',
+      full_name: 'Marcus Vance (Staff Systems Engineer)',
+      created_at: '2026-10-20T12:00:00.000Z',
+    },
+  ],
+  '77777777-7777-7777-7777-777777777777': [
+    {
+      id: 'u-701',
+      tenant_id: '77777777-7777-7777-7777-777777777777',
+      email: 'admin@himalayancharter.com',
+      role: 'OPERATOR_ADMIN',
+      full_name: 'Tenzing Norbu (Expedition Operations Chief)',
+      created_at: '2026-10-20T12:00:00.000Z',
+    },
+    {
+      id: 'u-702',
+      tenant_id: '77777777-7777-7777-7777-777777777777',
+      email: 'driver@himalayancharter.com',
+      role: 'DRIVER',
+      full_name: 'Dorje Lama (Master Alpine Driver)',
+      created_at: '2026-10-20T12:00:00.000Z',
+    },
+    {
+      id: 'u-703',
+      tenant_id: '77777777-7777-7777-7777-777777777777',
+      email: 'guest@himalayancharter.com',
+      role: 'RIDER',
+      full_name: 'Elena Rostova (Charter Passenger)',
       created_at: '2026-10-20T12:00:00.000Z',
     },
   ],
@@ -530,6 +603,50 @@ const DEFAULT_DEMO_BUSES: Record<string, BusEntity[]> = {
       "plate_number": "KA-04-EV-3001",
       "model": "Mahindra Cruzio EV",
       "capacity": 32,
+      "status": "ACTIVE",
+      "created_at": "2026-10-20T12:00:00.000Z"
+    }
+  ],
+  "66666666-6666-6666-6666-666666666666": [
+    {
+      "id": "66666666-0003-0001-0000-000000000001",
+      "tenant_id": "66666666-6666-6666-6666-666666666666",
+      "fleet_code": "TECH-01",
+      "plate_number": "WTC-8801",
+      "model": "Apex Electric Executive Shuttle",
+      "capacity": 36,
+      "status": "ACTIVE",
+      "created_at": "2026-10-20T12:00:00.000Z"
+    },
+    {
+      "id": "66666666-0003-0001-0000-000000000002",
+      "tenant_id": "66666666-6666-6666-6666-666666666666",
+      "fleet_code": "TECH-02",
+      "plate_number": "WTC-8802",
+      "model": "Apex Electric Executive Shuttle",
+      "capacity": 36,
+      "status": "ACTIVE",
+      "created_at": "2026-10-20T12:00:00.000Z"
+    }
+  ],
+  "77777777-7777-7777-7777-777777777777": [
+    {
+      "id": "77777777-0003-0001-0000-000000000001",
+      "tenant_id": "77777777-7777-7777-7777-777777777777",
+      "fleet_code": "ALPINE-01",
+      "plate_number": "HP-01-EXP",
+      "model": "Scania Alpine Luxury Coach",
+      "capacity": 28,
+      "status": "ACTIVE",
+      "created_at": "2026-10-20T12:00:00.000Z"
+    },
+    {
+      "id": "77777777-0003-0001-0000-000000000002",
+      "tenant_id": "77777777-7777-7777-7777-777777777777",
+      "fleet_code": "ALPINE-02",
+      "plate_number": "HP-02-EXP",
+      "model": "Scania Alpine Luxury Coach",
+      "capacity": 28,
       "status": "ACTIVE",
       "created_at": "2026-10-20T12:00:00.000Z"
     }
@@ -1086,6 +1203,82 @@ const DEFAULT_DEMO_STOPS: Record<string, Stop[]> = {
       "longitude": 77.5615,
       "created_at": "2026-10-20T12:00:00.000Z"
     }
+  ],
+  "66666666-6666-6666-6666-666666666666": [
+    {
+      "id": "66666666-0001-0001-0000-000000000001",
+      "tenant_id": "66666666-6666-6666-6666-666666666666",
+      "name": "Tech Park Gate 1 (North Concourse)",
+      "code": "APEX-G1",
+      "latitude": 3.1310,
+      "longitude": 101.6850,
+      "created_at": "2026-10-20T12:00:00.000Z"
+    },
+    {
+      "id": "66666666-0001-0001-0000-000000000002",
+      "tenant_id": "66666666-6666-6666-6666-666666666666",
+      "name": "Tower Alpha R&D Center",
+      "code": "APEX-T1",
+      "latitude": 3.1360,
+      "longitude": 101.6880,
+      "created_at": "2026-10-20T12:00:00.000Z"
+    },
+    {
+      "id": "66666666-0001-0001-0000-000000000003",
+      "tenant_id": "66666666-6666-6666-6666-666666666666",
+      "name": "Innovation Hub Plaza",
+      "code": "APEX-IH",
+      "latitude": 3.1410,
+      "longitude": 101.6910,
+      "created_at": "2026-10-20T12:00:00.000Z"
+    },
+    {
+      "id": "66666666-0001-0001-0000-000000000004",
+      "tenant_id": "66666666-6666-6666-6666-666666666666",
+      "name": "South Gate Metro Interchange",
+      "code": "APEX-SG",
+      "latitude": 3.1460,
+      "longitude": 101.6940,
+      "created_at": "2026-10-20T12:00:00.000Z"
+    }
+  ],
+  "77777777-7777-7777-7777-777777777777": [
+    {
+      "id": "77777777-0001-0001-0000-000000000001",
+      "tenant_id": "77777777-7777-7777-7777-777777777777",
+      "name": "Alpine Base Camp Terminal",
+      "code": "HAC-BC",
+      "latitude": 32.2396,
+      "longitude": 77.1887,
+      "created_at": "2026-10-20T12:00:00.000Z"
+    },
+    {
+      "id": "77777777-0001-0001-0000-000000000002",
+      "tenant_id": "77777777-7777-7777-7777-777777777777",
+      "name": "Valley Viewpoint Lodge",
+      "code": "HAC-VV",
+      "latitude": 32.2510,
+      "longitude": 77.1950,
+      "created_at": "2026-10-20T12:00:00.000Z"
+    },
+    {
+      "id": "77777777-0001-0001-0000-000000000003",
+      "tenant_id": "77777777-7777-7777-7777-777777777777",
+      "name": "Glacier Pass Station",
+      "code": "HAC-GP",
+      "latitude": 32.2680,
+      "longitude": 77.2050,
+      "created_at": "2026-10-20T12:00:00.000Z"
+    },
+    {
+      "id": "77777777-0001-0001-0000-000000000004",
+      "tenant_id": "77777777-7777-7777-7777-777777777777",
+      "name": "Summit Ridge Resort",
+      "code": "HAC-SR",
+      "latitude": 32.2850,
+      "longitude": 77.2180,
+      "created_at": "2026-10-20T12:00:00.000Z"
+    }
   ]
 };
 
@@ -1276,6 +1469,34 @@ const DEFAULT_DEMO_ROUTES: Record<string, RouteEntity[]> = {
       "destination": "Maramma Circle Terminal",
       "distance_km": 3,
       "estimated_minutes": 10,
+      "active": true,
+      "created_at": "2026-10-20T12:00:00.000Z"
+    }
+  ],
+  "66666666-6666-6666-6666-666666666666": [
+    {
+      "id": "66666666-0002-0001-0000-000000000001",
+      "tenant_id": "66666666-6666-6666-6666-666666666666",
+      "code": "EXP-C1",
+      "name": "Corporate Tech Line",
+      "origin": "Tech Park Gate 1 (North Concourse)",
+      "destination": "South Gate Metro Interchange",
+      "distance_km": 6.8,
+      "estimated_minutes": 24,
+      "active": true,
+      "created_at": "2026-10-20T12:00:00.000Z"
+    }
+  ],
+  "77777777-7777-7777-7777-777777777777": [
+    {
+      "id": "77777777-0002-0001-0000-000000000001",
+      "tenant_id": "77777777-7777-7777-7777-777777777777",
+      "code": "ALP-X1",
+      "name": "Himalayan Ridge Line",
+      "origin": "Alpine Base Camp Terminal",
+      "destination": "Summit Ridge Resort",
+      "distance_km": 12.4,
+      "estimated_minutes": 45,
       "active": true,
       "created_at": "2026-10-20T12:00:00.000Z"
     }
@@ -1791,6 +2012,94 @@ const DEFAULT_DEMO_SNAPSHOTS: Record<string, BusSnapshot[]> = {
       "speed_kmh": 31,
       "heading_deg": 320,
       "occupancy": 13
+    }
+  ],
+  "66666666-6666-6666-6666-666666666666": [
+    {
+      "recorded_at": "2026-10-20T12:00:00.000Z",
+      "tenant_id": "66666666-6666-6666-6666-666666666666",
+      "bus_id": "66666666-0003-0001-0000-000000000001",
+      "fleet_code": "TECH-01",
+      "plate_number": "WTC-8801",
+      "model": "Apex Electric Executive Shuttle",
+      "capacity": 36,
+      "bus_status": "ACTIVE",
+      "trip_status": "IN_TRANSIT",
+      "current_stop_sequence": 1,
+      "progress_pct": 25,
+      "route_id": "66666666-0002-0001-0000-000000000001",
+      "route_code": "EXP-C1",
+      "route_name": "Corporate Tech Line",
+      "latitude": 3.1325,
+      "longitude": 101.6860,
+      "speed_kmh": 34.5,
+      "heading_deg": 45,
+      "occupancy": 18
+    },
+    {
+      "recorded_at": "2026-10-20T12:00:00.000Z",
+      "tenant_id": "66666666-6666-6666-6666-666666666666",
+      "bus_id": "66666666-0003-0001-0000-000000000002",
+      "fleet_code": "TECH-02",
+      "plate_number": "WTC-8802",
+      "model": "Apex Electric Executive Shuttle",
+      "capacity": 36,
+      "bus_status": "ACTIVE",
+      "trip_status": "IN_TRANSIT",
+      "current_stop_sequence": 3,
+      "progress_pct": 65,
+      "route_id": "66666666-0002-0001-0000-000000000001",
+      "route_code": "EXP-C1",
+      "route_name": "Corporate Tech Line",
+      "latitude": 3.1420,
+      "longitude": 101.6915,
+      "speed_kmh": 42.0,
+      "heading_deg": 52,
+      "occupancy": 22
+    }
+  ],
+  "77777777-7777-7777-7777-777777777777": [
+    {
+      "recorded_at": "2026-10-20T12:00:00.000Z",
+      "tenant_id": "77777777-7777-7777-7777-777777777777",
+      "bus_id": "77777777-0003-0001-0000-000000000001",
+      "fleet_code": "ALPINE-01",
+      "plate_number": "HP-01-EXP",
+      "model": "Scania Alpine Luxury Coach",
+      "capacity": 28,
+      "bus_status": "ACTIVE",
+      "trip_status": "IN_TRANSIT",
+      "current_stop_sequence": 1,
+      "progress_pct": 30,
+      "route_id": "77777777-0002-0001-0000-000000000001",
+      "route_code": "ALP-X1",
+      "route_name": "Himalayan Ridge Line",
+      "latitude": 32.2430,
+      "longitude": 77.1910,
+      "speed_kmh": 28.0,
+      "heading_deg": 35,
+      "occupancy": 14
+    },
+    {
+      "recorded_at": "2026-10-20T12:00:00.000Z",
+      "tenant_id": "77777777-7777-7777-7777-777777777777",
+      "bus_id": "77777777-0003-0001-0000-000000000002",
+      "fleet_code": "ALPINE-02",
+      "plate_number": "HP-02-EXP",
+      "model": "Scania Alpine Luxury Coach",
+      "capacity": 28,
+      "bus_status": "ACTIVE",
+      "trip_status": "IN_TRANSIT",
+      "current_stop_sequence": 2,
+      "progress_pct": 55,
+      "route_id": "77777777-0002-0001-0000-000000000001",
+      "route_code": "ALP-X1",
+      "route_name": "Himalayan Ridge Line",
+      "latitude": 32.2600,
+      "longitude": 77.2000,
+      "speed_kmh": 31.0,
+      "heading_deg": 40,
+      "occupancy": 19
     }
   ]
 };
@@ -4749,7 +5058,13 @@ export default function Home() {
                     <p className="mt-1 text-sm text-muted-foreground">
                       {selectedRole === 'OPERATOR_ADMIN' && 'Central fleet dispatch, spatial telemetry, and workspace controls.'}
                       {selectedRole === 'DRIVER' && 'Active vehicle telematics, route telemetry, and passenger occupancy dispatch.'}
-                      {selectedRole === 'RIDER' && 'Live student transit corridor tracking, arrival ETAs, and seat availability.'}
+                      {selectedRole === 'RIDER' && (
+                        activeTenant.sector_type === 'CORPORATE_SHUTTLE'
+                          ? 'Live corporate shuttle tracking, arrival ETAs, and shift seat availability.'
+                          : activeTenant.sector_type === 'PRIVATE_CHARTER'
+                          ? 'Live private charter route tracking, waypoint ETAs, and reserved cabin seating.'
+                          : 'Live student transit corridor tracking, arrival ETAs, and seat availability.'
+                      )}
                       {selectedRole === 'SUPER_ADMIN' && 'Global platform management and cryptographic row-level security scope.'}
                     </p>
                   </div>
@@ -4768,7 +5083,11 @@ export default function Home() {
                           : selectedRole === 'DRIVER'
                           ? 'Transit driver'
                           : selectedRole === 'RIDER'
-                          ? 'Student rider'
+                          ? (activeTenant.sector_type === 'CORPORATE_SHUTTLE'
+                              ? 'Employee commuter'
+                              : activeTenant.sector_type === 'PRIVATE_CHARTER'
+                              ? 'Charter passenger'
+                              : 'Student rider')
                           : 'Super admin'}
                       </span>
                     </div>
@@ -5092,13 +5411,23 @@ export default function Home() {
                         <div>
                           <div className="flex items-center gap-2">
                             <ShieldCheck className="size-4 text-[#162A22]" />
-                            <h4 className="text-xs font-bold text-[#162A22]">Passenger Boarding Verification</h4>
+                            <h4 className="text-xs font-bold text-[#162A22]">
+                              {activeTenant.sector_type === 'PRIVATE_CHARTER'
+                                ? 'Passenger Manifest Verification'
+                                : activeTenant.sector_type === 'CORPORATE_SHUTTLE'
+                                ? 'Shift Roster Badge Verification'
+                                : 'Passenger Boarding Verification'}
+                            </h4>
                             <span className="text-[10px] px-2 py-0.5 rounded-full bg-[#E6F4EA] text-[#162A22] font-semibold">
                               HMAC-SHA256 Validator
                             </span>
                           </div>
                           <p className="text-[11px] text-black/50 mt-0.5">
-                            Validate cryptographically signed QR tickets at vehicle doors with 1-tap verification
+                            {activeTenant.sector_type === 'PRIVATE_CHARTER'
+                              ? 'Validate adult charter passenger manifests and 30kg luggage tags at coach door'
+                              : activeTenant.sector_type === 'CORPORATE_SHUTTLE'
+                              ? 'Validate corporate employee RFID badge tokens with 1-tap verification'
+                              : 'Validate cryptographically signed QR tickets at vehicle doors with 1-tap verification'}
                           </p>
                         </div>
                         <div className="flex items-center gap-2">
@@ -5130,7 +5459,11 @@ export default function Home() {
 
                       {seats.filter((s) => s.status === 'BOOKED').length === 0 ? (
                         <p className="text-xs text-black/40 py-2">
-                          No booked passengers found for current active trip. When riders book seats, their HMAC-SHA256 pass appears here.
+                          {activeTenant.sector_type === 'PRIVATE_CHARTER'
+                            ? 'No charter passenger bookings found on manifest for current voyage.'
+                            : activeTenant.sector_type === 'CORPORATE_SHUTTLE'
+                            ? 'No employee shift bookings found for current corporate run.'
+                            : 'No booked passengers found for current active trip. When riders book seats, their HMAC-SHA256 pass appears here.'}
                         </p>
                       ) : (
                         <div className="divide-y divide-black/[0.04] max-h-48 overflow-y-auto pr-1">
@@ -5147,7 +5480,7 @@ export default function Home() {
                                     </span>
                                     <div>
                                       <p className="font-semibold text-[#162A22]">
-                                        Seat {seat.seat_number} · Passenger {seat.booked_by_user_id?.slice(0, 8) || 'Rider'}
+                                        Seat {seat.seat_number} · {activeTenant.sector_type === 'PRIVATE_CHARTER' ? 'Manifest Guest' : activeTenant.sector_type === 'CORPORATE_SHUTTLE' ? 'Staff Commuter' : 'Passenger'} {seat.booked_by_user_id?.slice(0, 8) || 'Rider'}
                                       </p>
                                       <p className="text-[10px] text-black/50 font-sans truncate max-w-[280px]">
                                         HMAC: {qrToken.slice(0, 28)}…
@@ -5194,12 +5527,30 @@ export default function Home() {
                           <MapPin className="size-5 text-chart-5" />
                         </span>
                         <div>
-                          <h3 className="text-base font-semibold tracking-tight">Student commuter live tracker</h3>
-                          <p className="text-xs text-muted-foreground">Select your boarding stop to monitor incoming buses and seat availability</p>
+                          <h3 className="text-base font-semibold tracking-tight">
+                            {activeTenant.sector_type === 'CORPORATE_SHUTTLE'
+                              ? 'Corporate commuter live tracker'
+                              : activeTenant.sector_type === 'PRIVATE_CHARTER'
+                              ? 'Private charter live voyage tracker'
+                              : 'Student commuter live tracker'}
+                          </h3>
+                          <p className="text-xs text-muted-foreground">
+                            {activeTenant.sector_type === 'CORPORATE_SHUTTLE'
+                              ? 'Select your Tech Park Gate to monitor incoming shuttles and seat availability'
+                              : activeTenant.sector_type === 'PRIVATE_CHARTER'
+                              ? 'Select your charter pickup station to monitor incoming coach and manifest seating'
+                              : 'Select your boarding stop to monitor incoming campus shuttles and seat availability'}
+                          </p>
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
-                        <span className="text-xs text-muted-foreground">My boarding stop:</span>
+                        <span className="text-xs text-muted-foreground">
+                          {activeTenant.sector_type === 'CORPORATE_SHUTTLE'
+                            ? 'My Tech Park Gate:'
+                            : activeTenant.sector_type === 'PRIVATE_CHARTER'
+                            ? 'My charter waypoint:'
+                            : 'My boarding stop:'}
+                        </span>
                         <select
                           value={riderBoardingStopId || uniqueStops[0]?.id || ''}
                           onChange={(e) => setRiderBoardingStopId(e.target.value)}
@@ -5246,7 +5597,13 @@ export default function Home() {
                       </div>
 
                       <div className="p-4 rounded-2xl bg-[#DDF3E4]/50 border border-foreground/5">
-                        <span className="text-xs text-foreground/80 block">Available passenger seats</span>
+                        <span className="text-xs text-foreground/80 block">
+                          {activeTenant.sector_type === 'CORPORATE_SHUTTLE'
+                            ? 'Available employee seats'
+                            : activeTenant.sector_type === 'PRIVATE_CHARTER'
+                            ? 'Reserved cabin seats'
+                            : 'Available passenger seats'}
+                        </span>
                         <p className="mt-1 text-2xl font-semibold tracking-tight font-sans text-[#14281D]">
                           {riderRemainingSeats} <span className="text-xs font-normal text-muted-foreground">seats free</span>
                         </p>
@@ -5260,7 +5617,13 @@ export default function Home() {
                       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                         <div className="flex items-center gap-2">
                           <Ticket className="size-4 text-primary" />
-                          <h4 className="text-sm font-semibold tracking-tight">Reserve passenger seat</h4>
+                          <h4 className="text-sm font-semibold tracking-tight">
+                            {activeTenant.sector_type === 'CORPORATE_SHUTTLE'
+                              ? 'Reserve employee commuter seat'
+                              : activeTenant.sector_type === 'PRIVATE_CHARTER'
+                              ? 'Reserve passenger charter manifest seat'
+                              : 'Reserve passenger seat'}
+                          </h4>
                           <span className="text-[11px] font-sans text-muted-foreground">· 40 seats 2x2 layout</span>
                         </div>
 
@@ -7962,8 +8325,20 @@ export default function Home() {
                   <Bus className="size-4" />
                 </span>
                 <div>
-                  <h3 className="text-base font-semibold tracking-tight">NexTransit Digital Boarding Pass</h3>
-                  <p className="text-xs text-muted-foreground">HMAC-SHA256 Cryptographically Signed Ticket</p>
+                  <h3 className="text-base font-semibold tracking-tight">
+                    {activeTenant.sector_type === 'CORPORATE_SHUTTLE'
+                      ? 'Employee ID Badge Boarding Pass'
+                      : activeTenant.sector_type === 'PRIVATE_CHARTER'
+                      ? 'Private Charter Manifest Pass'
+                      : 'NexTransit Digital Boarding Pass'}
+                  </h3>
+                  <p className="text-xs text-muted-foreground">
+                    {activeTenant.sector_type === 'CORPORATE_SHUTTLE'
+                      ? 'Corporate Employee Shift Badge · HMAC-SHA256 Signed'
+                      : activeTenant.sector_type === 'PRIVATE_CHARTER'
+                      ? 'Luggage Capacity Tag: 30kg/seat · Charter Ref'
+                      : 'HMAC-SHA256 Cryptographically Signed Ticket'}
+                  </p>
                 </div>
               </div>
               <button
@@ -7978,13 +8353,23 @@ export default function Home() {
             <div className="rounded-2xl bg-[#F7F6F2] p-5 space-y-4 border border-black/[0.06]">
               <div className="flex items-center justify-between">
                 <div>
-                  <span className="text-[11px] font-sans text-muted-foreground block">Transit corridor</span>
+                  <span className="text-[11px] font-sans text-muted-foreground block">
+                    {activeTenant.sector_type === 'CORPORATE_SHUTTLE'
+                      ? 'Corporate route'
+                      : activeTenant.sector_type === 'PRIVATE_CHARTER'
+                      ? 'Charter passage'
+                      : 'Transit corridor'}
+                  </span>
                   <p className="text-sm font-semibold text-[#162A22] mt-0.5">
                     {activeRoute?.name || 'Active transit corridor'}
                   </p>
                 </div>
                 <div className="text-right">
-                  <span className="text-[11px] font-sans text-muted-foreground block">Assigned seat</span>
+                  <span className="text-[11px] font-sans text-muted-foreground block">
+                    {activeTenant.sector_type === 'PRIVATE_CHARTER'
+                      ? 'Reserved cabin seat'
+                      : 'Assigned seat'}
+                  </span>
                   <p className="text-2xl font-bold font-sans text-[#162A22] mt-0.5">
                     {activeBooking.seat_number}
                   </p>
@@ -7999,7 +8384,13 @@ export default function Home() {
                   </p>
                 </div>
                 <div>
-                  <span className="text-[11px] font-sans text-muted-foreground block">Ticket code</span>
+                  <span className="text-[11px] font-sans text-muted-foreground block">
+                    {activeTenant.sector_type === 'PRIVATE_CHARTER'
+                      ? 'Charter Booking Ref'
+                      : activeTenant.sector_type === 'CORPORATE_SHUTTLE'
+                      ? 'Employee Badge Ref'
+                      : 'Ticket code'}
+                  </span>
                   <p className="font-sans font-medium text-[#162A22] mt-0.5">
                     {activeBooking.ticket_code}
                   </p>
@@ -8025,7 +8416,13 @@ export default function Home() {
             <div className="flex items-center justify-between text-xs text-muted-foreground">
               <span className="inline-flex items-center gap-1.5 text-[#162A22] font-semibold">
                 <CheckCircle2 className="size-4 text-emerald-600" />
-                <span>Confirmed & ready to board</span>
+                <span>
+                  {activeTenant.sector_type === 'PRIVATE_CHARTER'
+                    ? 'Manifest confirmed & luggage verified'
+                    : activeTenant.sector_type === 'CORPORATE_SHUTTLE'
+                    ? 'Shift badge confirmed & ready to board'
+                    : 'Confirmed & ready to board'}
+                </span>
               </span>
               <button
                 type="button"

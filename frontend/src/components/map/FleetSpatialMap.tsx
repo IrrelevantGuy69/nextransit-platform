@@ -481,11 +481,13 @@ export default function FleetSpatialMap({
           (snapshots || [])
             .filter((b) => b && b.is_detour && b.detour_lat && b.detour_lng)
             .map((bus) => {
-              const detourPath: LatLngTuple[] = getSplinePoints([
-                [bus.latitude, bus.longitude],
-                [bus.detour_lat!, bus.detour_lng!],
-                [bus.detour_lat! + 0.003, bus.detour_lng! + 0.003],
-              ]);
+              const detourPath: LatLngTuple[] = (bus.detour_geometry && bus.detour_geometry.length > 0)
+                ? bus.detour_geometry.map((pt) => [pt[0], pt[1]] as LatLngTuple)
+                : getSplinePoints([
+                    [bus.latitude, bus.longitude],
+                    [bus.detour_lat!, bus.detour_lng!],
+                    [bus.detour_lat! + 0.003, bus.detour_lng! + 0.003],
+                  ]);
               return (
                 <React.Fragment key={`bus-detour-${bus.bus_id}`}>
                   <Polyline

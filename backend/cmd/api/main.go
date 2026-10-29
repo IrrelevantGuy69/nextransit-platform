@@ -26,10 +26,13 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 	"golang.org/x/crypto/bcrypt"
 	"github.com/raghav/transit-platform/backend/internal/auth"
 	"github.com/raghav/transit-platform/backend/internal/db"
 	"github.com/raghav/transit-platform/backend/internal/middleware"
+	"github.com/raghav/transit-platform/backend/pkg/cache"
+	"github.com/raghav/transit-platform/backend/pkg/routing"
 )
 
 type Server struct {
@@ -38,6 +41,8 @@ type Server struct {
 	jwtSecret   string
 	rateLimiter *RateLimiter
 	metrics     *SystemMetrics
+	redisBroker *cache.RedisBroker
+	router      *routing.Client
 }
 
 type TokenBucket struct {
@@ -444,11 +449,12 @@ type BusSnapshot struct {
 	SpeedKmh              float64    `json:"speed_kmh"`
 	HeadingDeg            float64    `json:"heading_deg"`
 	Occupancy             int        `json:"occupancy"`
-	IsDetour              bool       `json:"is_detour"`
-	DetourReason          string     `json:"detour_reason"`
-	DetourLat             *float64   `json:"detour_lat,omitempty"`
-	DetourLng             *float64   `json:"detour_lng,omitempty"`
-	BypassedStopSequences []int      `json:"bypassed_stop_sequences,omitempty"`
+	IsDetour              bool        `json:"is_detour"`
+	DetourReason          string      `json:"detour_reason"`
+	DetourLat             *float64    `json:"detour_lat,omitempty"`
+	DetourLng             *float64    `json:"detour_lng,omitempty"`
+	BypassedStopSequences []int       `json:"bypassed_stop_sequences,omitempty"`
+	DetourGeometry        [][]float64 `json:"detour_geometry,omitempty"`
 }
 
 type IngestTelemetryRequest struct {
@@ -617,23 +623,29 @@ type BookSeatRequest struct {
 }
 
 type BusDetourRequest struct {
-	BusID         string   `json:"bus_id"`
-	IsDetour      bool     `json:"is_detour"`
-	DetourReason  string   `json:"detour_reason,omitempty"`
-	DetourLat     *float64 `json:"detour_lat,omitempty"`
-	DetourLng     *float64 `json:"detour_lng,omitempty"`
-	BypassedStops []int    `json:"bypassed_stops,omitempty"`
+	BusID          string   `json:"bus_id"`
+	Active         *bool    `json:"active,omitempty"`
+	IsDetour       bool     `json:"is_detour"`
+	Reason         string   `json:"reason,omitempty"`
+	DetourReason   string   `json:"detour_reason,omitempty"`
+	BypassNextStop *bool    `json:"bypass_next_stop,omitempty"`
+	DetourLat      *float64 `json:"detour_lat,omitempty"`
+	DetourLng      *float64 `json:"detour_lng,omitempty"`
+	BypassedStops  []int    `json:"bypassed_stops,omitempty"`
 }
 
 type BusDetourResponse struct {
-	Success       bool     `json:"success"`
-	BusID         string   `json:"bus_id"`
-	IsDetour      bool     `json:"is_detour"`
-	DetourReason  string   `json:"detour_reason"`
-	DetourLat     *float64 `json:"detour_lat,omitempty"`
-	DetourLng     *float64 `json:"detour_lng,omitempty"`
-	BypassedStops []int    `json:"bypassed_stops"`
-	Message       string   `json:"message"`
+	Success         bool        `json:"success"`
+	BusID           string      `json:"bus_id"`
+	IsDetour        bool        `json:"is_detour"`
+	DetourReason    string      `json:"detour_reason"`
+	DetourLat       *float64    `json:"detour_lat,omitempty"`
+	DetourLng       *float64    `json:"detour_lng,omitempty"`
+	BypassedStops   []int       `json:"bypassed_stops"`
+	Geometry        [][]float64 `json:"geometry,omitempty"`
+	DistanceMeters  float64     `json:"distance_meters,omitempty"`
+	DurationSeconds float64     `json:"duration_seconds,omitempty"`
+	Message         string      `json:"message"`
 }
 
 type SeatWaitlist struct {
@@ -734,8 +746,11 @@ func main() {
 		jwtSecret:   jwtSecret,
 		rateLimiter: NewRateLimiter(60, 100),
 		metrics:     &SystemMetrics{},
+		redisBroker: cache.NewRedisBroker(os.Getenv("REDIS_URL")),
+		router:      routing.NewClient(os.Getenv("OSRM_BASE_URL")),
 	}
 	_ = srv.ensureSchema(context.Background())
+	_ = srv.seedMultiSectorWorkspaces(context.Background())
 	srv.startExpiredHoldSweeper(context.Background())
 
 	r := chi.NewRouter()
@@ -1977,6 +1992,12 @@ func (s *Server) handleIngestTelemetry(w http.ResponseWriter, r *http.Request) {
 
 	s.metrics.TelemetryPingsTotal.Add(1)
 
+	if s.redisBroker != nil && s.redisBroker.IsAvailable() {
+		_ = s.redisBroker.GeoAdd(r.Context(), "fleet:locations", req.Longitude, req.Latitude, req.BusID)
+		telemetryData, _ := json.Marshal(telemetry)
+		_ = s.redisBroker.Publish(r.Context(), fmt.Sprintf("fleet:channel:%s", targetTenantID), telemetryData)
+	}
+
 	respondJSON(w, http.StatusCreated, telemetry)
 }
 
@@ -1991,7 +2012,8 @@ func (s *Server) handleLatestTelemetry(w http.ResponseWriter, r *http.Request) {
 				b.trip_status, b.current_stop_sequence, b.progress_pct, b.trip_ended_at,
 				t.route_id, COALESCE(r.code, ''), COALESCE(r.name, ''),
 				t.latitude, t.longitude, t.speed_kmh, t.heading_deg, t.occupancy,
-				COALESCE(b.is_detour, false), COALESCE(b.detour_reason, ''), b.detour_lat, b.detour_lng, COALESCE(b.bypassed_stop_sequences, '{}')
+				COALESCE(b.is_detour, false), COALESCE(b.detour_reason, ''), b.detour_lat, b.detour_lng, COALESCE(b.bypassed_stop_sequences, '{}'),
+				b.detour_geometry
 			FROM bus_telemetry t
 			JOIN buses b ON t.bus_id = b.id
 			LEFT JOIN routes r ON t.route_id = r.id
@@ -2005,14 +2027,19 @@ func (s *Server) handleLatestTelemetry(w http.ResponseWriter, r *http.Request) {
 
 		for rows.Next() {
 			var sn BusSnapshot
+			var rawGeom []byte
 			if err := rows.Scan(
 				&sn.RecordedAt, &sn.TenantID, &sn.BusID, &sn.FleetCode, &sn.PlateNumber, &sn.Model, &sn.Capacity, &sn.BusStatus,
 				&sn.TripStatus, &sn.CurrentStopSequence, &sn.ProgressPct, &sn.TripEndedAt,
 				&sn.RouteID, &sn.RouteCode, &sn.RouteName,
 				&sn.Latitude, &sn.Longitude, &sn.SpeedKmh, &sn.HeadingDeg, &sn.Occupancy,
 				&sn.IsDetour, &sn.DetourReason, &sn.DetourLat, &sn.DetourLng, &sn.BypassedStopSequences,
+				&rawGeom,
 			); err != nil {
 				return err
+			}
+			if len(rawGeom) > 0 {
+				_ = json.Unmarshal(rawGeom, &sn.DetourGeometry)
 			}
 			snapshots = append(snapshots, sn)
 		}
@@ -2491,6 +2518,14 @@ func (s *Server) handleSimulateStep(w http.ResponseWriter, r *http.Request) {
 
 	s.metrics.TelemetryPingsTotal.Add(int64(len(newTelemetry)))
 
+	if s.redisBroker != nil && s.redisBroker.IsAvailable() {
+		for _, item := range newTelemetry {
+			_ = s.redisBroker.GeoAdd(r.Context(), "fleet:locations", item.Longitude, item.Latitude, item.BusID)
+			itemData, _ := json.Marshal(item)
+			_ = s.redisBroker.Publish(r.Context(), fmt.Sprintf("fleet:channel:%s", item.TenantID), itemData)
+		}
+	}
+
 	respondJSON(w, http.StatusOK, newTelemetry)
 }
 
@@ -2650,6 +2685,20 @@ func (s *Server) handleTelemetryStream(w http.ResponseWriter, r *http.Request) {
 
 	tenantContext, _ := s.resolveTenantContext(r)
 
+	var pubsub *redis.PubSub
+	var msgChan <-chan *redis.Message
+	if s.redisBroker != nil && s.redisBroker.IsAvailable() {
+		channel := "fleet:channel:*"
+		if tenantContext != "" && tenantContext != auth.RoleSuperAdmin {
+			channel = fmt.Sprintf("fleet:channel:%s", tenantContext)
+		}
+		pubsub = s.redisBroker.Subscribe(r.Context(), channel)
+		if pubsub != nil {
+			defer pubsub.Close()
+			msgChan = pubsub.Channel()
+		}
+	}
+
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
@@ -2657,6 +2706,11 @@ func (s *Server) handleTelemetryStream(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 			return
+		case msg, ok := <-msgChan:
+			if ok && msg != nil {
+				_, _ = fmt.Fprintf(w, "data: %s\n\n", msg.Payload)
+				flusher.Flush()
+			}
 		case <-ticker.C:
 			var snapshots []BusSnapshot
 			_ = db.WithTenantTx(r.Context(), s.pool.Pool, tenantContext, func(tx pgx.Tx) error {
@@ -2665,7 +2719,9 @@ func (s *Server) handleTelemetryStream(w http.ResponseWriter, r *http.Request) {
 						t.recorded_at, t.tenant_id, t.bus_id, b.fleet_code, b.plate_number, b.model, b.capacity, b.status,
 						b.trip_status, b.current_stop_sequence, b.progress_pct, b.trip_ended_at,
 						t.route_id, COALESCE(r.code, ''), COALESCE(r.name, ''),
-						t.latitude, t.longitude, t.speed_kmh, t.heading_deg, t.occupancy
+						t.latitude, t.longitude, t.speed_kmh, t.heading_deg, t.occupancy,
+						COALESCE(b.is_detour, false), COALESCE(b.detour_reason, ''), b.detour_lat, b.detour_lng, COALESCE(b.bypassed_stop_sequences, '{}'),
+						b.detour_geometry
 					FROM bus_telemetry t
 					JOIN buses b ON t.bus_id = b.id
 					LEFT JOIN routes r ON t.route_id = r.id
@@ -2677,12 +2733,18 @@ func (s *Server) handleTelemetryStream(w http.ResponseWriter, r *http.Request) {
 
 				for rows.Next() {
 					var sn BusSnapshot
+					var rawGeom []byte
 					if err := rows.Scan(
 						&sn.RecordedAt, &sn.TenantID, &sn.BusID, &sn.FleetCode, &sn.PlateNumber, &sn.Model, &sn.Capacity, &sn.BusStatus,
 						&sn.TripStatus, &sn.CurrentStopSequence, &sn.ProgressPct, &sn.TripEndedAt,
 						&sn.RouteID, &sn.RouteCode, &sn.RouteName,
 						&sn.Latitude, &sn.Longitude, &sn.SpeedKmh, &sn.HeadingDeg, &sn.Occupancy,
+						&sn.IsDetour, &sn.DetourReason, &sn.DetourLat, &sn.DetourLng, &sn.BypassedStopSequences,
+						&rawGeom,
 					); err == nil {
+						if len(rawGeom) > 0 {
+							_ = json.Unmarshal(rawGeom, &sn.DetourGeometry)
+						}
 						snapshots = append(snapshots, sn)
 					}
 				}
@@ -4867,6 +4929,60 @@ func (s *Server) ensureSchema(ctx context.Context) error {
 		`ALTER TABLE seat_inventory ADD COLUMN IF NOT EXISTS qr_token TEXT`,
 		`ALTER TABLE seat_inventory ADD COLUMN IF NOT EXISTS checked_in BOOLEAN NOT NULL DEFAULT FALSE`,
 		`ALTER TABLE seat_inventory ADD COLUMN IF NOT EXISTS checked_in_at TIMESTAMPTZ`,
+		`ALTER TABLE buses ADD COLUMN IF NOT EXISTS detour_geometry JSONB`,
+		`ALTER TABLE transit_events DROP CONSTRAINT IF EXISTS transit_events_event_type_check`,
+	}
+	for _, q := range queries {
+		_, _ = s.pool.Pool.Exec(ctx, q)
+	}
+	return nil
+}
+
+func (s *Server) seedMultiSectorWorkspaces(ctx context.Context) error {
+	queries := []string{
+		`UPDATE tenants SET sector_type = 'UNIVERSITY_CAMPUS' WHERE id = '11111111-1111-1111-1111-111111111111'`,
+		`INSERT INTO tenants (id, name, slug, status, sector_type) VALUES
+			('66666666-6666-6666-6666-666666666666', 'Apex Tech Park Express', 'apex-tech-park', 'ACTIVE', 'CORPORATE_SHUTTLE'),
+			('77777777-7777-7777-7777-777777777777', 'Himalayan Alpine Charter', 'himalayan-alpine', 'ACTIVE', 'PRIVATE_CHARTER')
+		ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, slug = EXCLUDED.slug, status = EXCLUDED.status, sector_type = EXCLUDED.sector_type`,
+		`INSERT INTO users (id, tenant_id, email, role, full_name, password_hash) VALUES
+			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', 'admin@apextech.com', 'OPERATOR_ADMIN', 'Priya Nair (Corporate Transit Manager)', '$2a$10$8D8pRvo6lxhZoJbQse51eOi6ykZwVQtoUPqblPgT3InSUyeZHZx3m'),
+			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', 'driver@apextech.com', 'DRIVER', 'David Chen (Executive Fleet Captain)', '$2a$10$6rt1FZ9Krlw6c6WXbEGRg.wG.0As9/gKCb6r3znyJq0aWjXFHz6AW'),
+			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', 'employee@apextech.com', 'RIDER', 'Marcus Vance (Staff Systems Engineer)', '$2a$10$iaTcz7YGeZ3atHmJ0zouDOi2cag/ELuNuySd/eILBLZdi1./5H/7u'),
+			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', 'admin@himalayancharter.com', 'OPERATOR_ADMIN', 'Tenzing Norbu (Expedition Operations Chief)', '$2a$10$8D8pRvo6lxhZoJbQse51eOi6ykZwVQtoUPqblPgT3InSUyeZHZx3m'),
+			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', 'driver@himalayancharter.com', 'DRIVER', 'Dorje Lama (Master Alpine Driver)', '$2a$10$6rt1FZ9Krlw6c6WXbEGRg.wG.0As9/gKCb6r3znyJq0aWjXFHz6AW'),
+			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', 'guest@himalayancharter.com', 'RIDER', 'Elena Rostova (Charter Passenger)', '$2a$10$iaTcz7YGeZ3atHmJ0zouDOi2cag/ELuNuySd/eILBLZdi1./5H/7u')
+		ON CONFLICT (tenant_id, email) DO UPDATE SET password_hash = EXCLUDED.password_hash, full_name = EXCLUDED.full_name`,
+		`INSERT INTO stops (id, tenant_id, name, code, latitude, longitude, location) VALUES
+			('66666666-0001-0001-0000-000000000001', '66666666-6666-6666-6666-666666666666', 'Tech Park Gate 1 (North Concourse)', 'APEX-G1', 3.1310, 101.6850, ST_SetSRID(ST_MakePoint(101.6850, 3.1310), 4326)::geography),
+			('66666666-0001-0001-0000-000000000002', '66666666-6666-6666-6666-666666666666', 'Tower Alpha R&D Center', 'APEX-T1', 3.1360, 101.6880, ST_SetSRID(ST_MakePoint(101.6880, 3.1360), 4326)::geography),
+			('66666666-0001-0001-0000-000000000003', '66666666-6666-6666-6666-666666666666', 'Innovation Hub Plaza', 'APEX-IH', 3.1410, 101.6910, ST_SetSRID(ST_MakePoint(101.6910, 3.1410), 4326)::geography),
+			('66666666-0001-0001-0000-000000000004', '66666666-6666-6666-6666-666666666666', 'South Gate Metro Interchange', 'APEX-SG', 3.1460, 101.6940, ST_SetSRID(ST_MakePoint(101.6940, 3.1460), 4326)::geography),
+			('77777777-0001-0001-0000-000000000001', '77777777-7777-7777-7777-777777777777', 'Alpine Base Camp Terminal', 'HAC-BC', 32.2396, 77.1887, ST_SetSRID(ST_MakePoint(77.1887, 32.2396), 4326)::geography),
+			('77777777-0001-0001-0000-000000000002', '77777777-7777-7777-7777-777777777777', 'Valley Viewpoint Lodge', 'HAC-VV', 32.2510, 77.1950, ST_SetSRID(ST_MakePoint(77.1950, 32.2510), 4326)::geography),
+			('77777777-0001-0001-0000-000000000003', '77777777-7777-7777-7777-777777777777', 'Glacier Pass Station', 'HAC-GP', 32.2680, 77.2050, ST_SetSRID(ST_MakePoint(77.2050, 32.2680), 4326)::geography),
+			('77777777-0001-0001-0000-000000000004', '77777777-7777-7777-7777-777777777777', 'Summit Ridge Resort', 'HAC-SR', 32.2850, 77.2180, ST_SetSRID(ST_MakePoint(77.2180, 32.2850), 4326)::geography)
+		ON CONFLICT (id) DO NOTHING`,
+		`INSERT INTO routes (id, tenant_id, code, name, origin, destination, distance_km, estimated_minutes) VALUES
+			('66666666-0002-0001-0000-000000000001', '66666666-6666-6666-6666-666666666666', 'EXP-C1', 'Corporate Tech Line', 'Tech Park Gate 1 (North Concourse)', 'South Gate Metro Interchange', 6.8, 24),
+			('77777777-0002-0001-0000-000000000001', '77777777-7777-7777-7777-777777777777', 'ALP-X1', 'Himalayan Ridge Line', 'Alpine Base Camp Terminal', 'Summit Ridge Resort', 12.4, 45)
+		ON CONFLICT (id) DO NOTHING`,
+		`INSERT INTO route_stops (id, tenant_id, route_id, stop_id, stop_sequence, eta_offset_minutes) VALUES
+			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000001', '66666666-0001-0001-0000-000000000001', 1, 0),
+			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000001', '66666666-0001-0001-0000-000000000002', 2, 6),
+			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000001', '66666666-0001-0001-0000-000000000003', 3, 14),
+			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000001', '66666666-0001-0001-0000-000000000004', 4, 24),
+			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000001', '77777777-0001-0001-0000-000000000001', 1, 0),
+			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000001', '77777777-0001-0001-0000-000000000002', 2, 12),
+			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000001', '77777777-0001-0001-0000-000000000003', 3, 28),
+			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000001', '77777777-0001-0001-0000-000000000004', 4, 45)
+		ON CONFLICT (route_id, stop_id) DO NOTHING`,
+		`INSERT INTO buses (id, tenant_id, fleet_code, plate_number, model, capacity, status, trip_status, current_stop_sequence, progress_pct) VALUES
+			('66666666-0003-0001-0000-000000000001', '66666666-6666-6666-6666-666666666666', 'TECH-01', 'WTC-8801', 'Apex Electric Executive Shuttle', 36, 'ACTIVE', 'IN_TRANSIT', 1, 25.0),
+			('66666666-0003-0001-0000-000000000002', '66666666-6666-6666-6666-666666666666', 'TECH-02', 'WTC-8802', 'Apex Electric Executive Shuttle', 36, 'ACTIVE', 'IN_TRANSIT', 3, 65.0),
+			('77777777-0003-0001-0000-000000000001', '77777777-7777-7777-7777-777777777777', 'ALPINE-01', 'HP-01-EXP', 'Scania Alpine Luxury Coach', 28, 'ACTIVE', 'IN_TRANSIT', 1, 30.0),
+			('77777777-0003-0001-0000-000000000002', '77777777-7777-7777-7777-777777777777', 'ALPINE-02', 'HP-02-EXP', 'Scania Alpine Luxury Coach', 28, 'ACTIVE', 'IN_TRANSIT', 2, 55.0)
+		ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status, trip_status = EXCLUDED.trip_status`,
 	}
 	for _, q := range queries {
 		_, _ = s.pool.Pool.Exec(ctx, q)
@@ -4965,8 +5081,11 @@ func (s *Server) promoteWaitlistOrFree(ctx context.Context, tx pgx.Tx, tripID, s
 
 func (s *Server) handleBusDetour(w http.ResponseWriter, r *http.Request) {
 	tenantContext, callerTenantID := s.resolveTenantContext(r)
-	if tenantContext == "" || tenantContext == auth.RoleSuperAdmin {
+	if tenantContext == "" {
 		tenantContext = callerTenantID
+	}
+	if tenantContext == "" {
+		tenantContext = auth.RoleSuperAdmin
 	}
 
 	var req BusDetourRequest
@@ -4977,6 +5096,13 @@ func (s *Server) handleBusDetour(w http.ResponseWriter, r *http.Request) {
 	if req.BusID == "" {
 		respondError(w, http.StatusBadRequest, "bus_id is required")
 		return
+	}
+
+	if req.Active != nil {
+		req.IsDetour = *req.Active
+	}
+	if req.Reason != "" && req.DetourReason == "" {
+		req.DetourReason = req.Reason
 	}
 
 	var resp BusDetourResponse
@@ -4990,10 +5116,20 @@ func (s *Server) handleBusDetour(w http.ResponseWriter, r *http.Request) {
 
 	err := db.WithTenantTx(r.Context(), s.pool.Pool, tenantContext, func(tx pgx.Tx) error {
 		var busLat, busLng float64
-		_ = tx.QueryRow(r.Context(), `
-			SELECT latitude, longitude FROM bus_telemetry WHERE bus_id = $1::uuid ORDER BY recorded_at DESC LIMIT 1`, req.BusID).Scan(&busLat, &busLng)
+		var busTenantID string
+		err := tx.QueryRow(r.Context(), `
+			SELECT tenant_id,
+			       COALESCE((SELECT latitude FROM bus_telemetry WHERE bus_id = $1::uuid ORDER BY recorded_at DESC LIMIT 1), 3.1205),
+			       COALESCE((SELECT longitude FROM bus_telemetry WHERE bus_id = $1::uuid ORDER BY recorded_at DESC LIMIT 1), 101.6548)
+			FROM buses WHERE id = $1::uuid`, req.BusID).Scan(&busTenantID, &busLat, &busLng)
+		if err != nil {
+			return err
+		}
 
 		var detourLat, detourLng *float64
+		var geoJSONBytes []byte
+		var targetSeq int
+
 		if req.IsDetour {
 			if req.DetourLat != nil && req.DetourLng != nil && *req.DetourLat != 0 {
 				detourLat = req.DetourLat
@@ -5004,29 +5140,81 @@ func (s *Server) handleBusDetour(w http.ResponseWriter, r *http.Request) {
 				detourLat = &dLat
 				detourLng = &dLng
 			}
-			if len(resp.BypassedStops) == 0 {
-				var curSeq int
-				_ = tx.QueryRow(r.Context(), `SELECT current_stop_sequence FROM buses WHERE id = $1::uuid`, req.BusID).Scan(&curSeq)
-				if curSeq > 0 {
-					resp.BypassedStops = []int{curSeq, curSeq + 1}
-				} else {
-					resp.BypassedStops = []int{2, 3}
+
+			var curSeq int
+			_ = tx.QueryRow(r.Context(), `SELECT current_stop_sequence FROM buses WHERE id = $1::uuid`, req.BusID).Scan(&curSeq)
+			if curSeq <= 0 {
+				curSeq = 1
+			}
+
+			if req.BypassNextStop != nil && *req.BypassNextStop {
+				resp.BypassedStops = []int{curSeq + 1}
+				targetSeq = curSeq + 2
+			} else if len(resp.BypassedStops) == 0 {
+				resp.BypassedStops = []int{curSeq, curSeq + 1}
+				targetSeq = curSeq + 2
+			} else {
+				maxSeq := curSeq
+				for _, seq := range resp.BypassedStops {
+					if seq > maxSeq {
+						maxSeq = seq
+					}
 				}
+				targetSeq = maxSeq + 1
+			}
+
+			var nextStopLat, nextStopLng float64
+			_ = tx.QueryRow(r.Context(), `
+				SELECT s.latitude, s.longitude
+				FROM route_stops rs
+				JOIN stops s ON rs.stop_id = s.id
+				WHERE rs.stop_sequence >= $1
+				  AND (rs.route_id IN (SELECT route_id FROM bus_telemetry WHERE bus_id = $2::uuid ORDER BY recorded_at DESC LIMIT 1)
+				       OR rs.route_id IN (SELECT route_id FROM trips WHERE bus_id = $2::uuid ORDER BY created_at DESC LIMIT 1))
+				ORDER BY rs.stop_sequence ASC
+				LIMIT 1`, targetSeq, req.BusID).Scan(&nextStopLat, &nextStopLng)
+
+			if nextStopLat == 0 {
+				nextStopLat = *detourLat + 0.004
+				nextStopLng = *detourLng + 0.004
+			}
+
+			if s.router != nil {
+				routeRes, rErr := s.router.GetRoute(r.Context(), *detourLat, *detourLng, nextStopLat, nextStopLng)
+				if rErr == nil && routeRes != nil {
+					resp.Geometry = routeRes.Coordinates
+					resp.DistanceMeters = routeRes.DistanceMeters
+					resp.DurationSeconds = routeRes.DurationSeconds
+				}
+			}
+
+			if len(resp.Geometry) > 0 {
+				geoJSONBytes, _ = json.Marshal(resp.Geometry)
+			}
+
+			_, err := tx.Exec(r.Context(), `
+				UPDATE buses
+				SET is_detour = true, detour_reason = $1, detour_lat = $2, detour_lng = $3, bypassed_stop_sequences = $4, detour_geometry = $5, current_stop_sequence = $6
+				WHERE id = $7::uuid`,
+				req.DetourReason, detourLat, detourLng, resp.BypassedStops, geoJSONBytes, targetSeq, req.BusID,
+			)
+			if err != nil {
+				return err
+			}
+		} else {
+			_, err := tx.Exec(r.Context(), `
+				UPDATE buses
+				SET is_detour = false, detour_reason = '', detour_lat = NULL, detour_lng = NULL, bypassed_stop_sequences = '{}', detour_geometry = NULL
+				WHERE id = $1::uuid`, req.BusID,
+			)
+			if err != nil {
+				return err
 			}
 		}
 
 		resp.DetourLat = detourLat
 		resp.DetourLng = detourLng
-
-		_, err := tx.Exec(r.Context(), `
-			UPDATE buses
-			SET is_detour = $1, detour_reason = $2, detour_lat = $3, detour_lng = $4, bypassed_stop_sequences = $5
-			WHERE id = $6::uuid`,
-			req.IsDetour, req.DetourReason, detourLat, detourLng, resp.BypassedStops, req.BusID,
-		)
-		if err != nil {
-			return err
-		}
+		resp.Success = true
 
 		var eventType string
 		if req.IsDetour {
@@ -5039,8 +5227,8 @@ func (s *Server) handleBusDetour(w http.ResponseWriter, r *http.Request) {
 
 		_, _ = tx.Exec(r.Context(), `
 			INSERT INTO transit_events (id, tenant_id, bus_id, event_type, triggered_at, distance_meters)
-			VALUES (gen_random_uuid(), $1, $2, $3, NOW(), 0)`,
-			tenantContext, req.BusID, eventType,
+			VALUES (gen_random_uuid(), $1::uuid, $2::uuid, $3, NOW(), 0)`,
+			busTenantID, req.BusID, eventType,
 		)
 
 		return nil
@@ -5051,13 +5239,21 @@ func (s *Server) handleBusDetour(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.redisBroker != nil && s.redisBroker.IsAvailable() {
+		detourBytes, _ := json.Marshal(resp)
+		_ = s.redisBroker.Publish(r.Context(), fmt.Sprintf("fleet:channel:%s", tenantContext), detourBytes)
+	}
+
 	respondJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleJoinWaitlist(w http.ResponseWriter, r *http.Request) {
 	tenantContext, callerTenantID := s.resolveTenantContext(r)
-	if tenantContext == "" || tenantContext == auth.RoleSuperAdmin {
+	if tenantContext == "" {
 		tenantContext = callerTenantID
+	}
+	if tenantContext == "" {
+		tenantContext = auth.RoleSuperAdmin
 	}
 
 	var req JoinWaitlistRequest
@@ -5072,28 +5268,36 @@ func (s *Server) handleJoinWaitlist(w http.ResponseWriter, r *http.Request) {
 
 	var waitlist SeatWaitlist
 	err := db.WithTenantTx(r.Context(), s.pool.Pool, tenantContext, func(tx pgx.Tx) error {
-		var resolvedRouteID string
+		var tripTenantID, resolvedRouteID string
+		err := tx.QueryRow(r.Context(), `SELECT tenant_id, route_id FROM trips WHERE id = $1::uuid`, req.TripID).Scan(&tripTenantID, &resolvedRouteID)
+		if err != nil {
+			return fmt.Errorf("trip %s not found: %w", req.TripID, err)
+		}
+
+		waitlist.TenantID = tripTenantID
+
 		if req.RouteID != nil && *req.RouteID != "" {
 			resolvedRouteID = *req.RouteID
-		} else {
-			_ = tx.QueryRow(r.Context(), `SELECT route_id FROM trips WHERE id = $1::uuid`, req.TripID).Scan(&resolvedRouteID)
-			if resolvedRouteID == "" {
-				_ = tx.QueryRow(r.Context(), `SELECT id FROM routes WHERE tenant_id = $1::uuid LIMIT 1`, tenantContext).Scan(&resolvedRouteID)
-			}
+		} else if resolvedRouteID == "" {
+			_ = tx.QueryRow(r.Context(), `SELECT id FROM routes WHERE tenant_id = $1::uuid LIMIT 1`, waitlist.TenantID).Scan(&resolvedRouteID)
+		}
+
+		boardingStopID := req.BoardingStopID
+		if boardingStopID != nil && *boardingStopID == "" {
+			boardingStopID = nil
 		}
 
 		waitlist.ID = uuid.New().String()
-		waitlist.TenantID = tenantContext
 		waitlist.TripID = req.TripID
 		waitlist.RouteID = resolvedRouteID
 		waitlist.RiderName = req.RiderName
 		waitlist.RiderEmail = req.RiderEmail
 		waitlist.PreferredSeat = req.PreferredSeat
-		waitlist.BoardingStopID = req.BoardingStopID
+		waitlist.BoardingStopID = boardingStopID
 		waitlist.Status = "WAITING"
 		waitlist.CreatedAt = time.Now().UTC()
 
-		_, err := tx.Exec(r.Context(), `
+		_, err = tx.Exec(r.Context(), `
 			INSERT INTO seat_waitlist (id, tenant_id, trip_id, route_id, rider_name, rider_email, preferred_seat, boarding_stop_id, status, created_at)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
 			waitlist.ID, waitlist.TenantID, waitlist.TripID, waitlist.RouteID, waitlist.RiderName, waitlist.RiderEmail, waitlist.PreferredSeat, waitlist.BoardingStopID, waitlist.Status, waitlist.CreatedAt,
@@ -5121,7 +5325,13 @@ func (s *Server) handleJoinWaitlist(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetWaitlist(w http.ResponseWriter, r *http.Request) {
-	tenantContext, _ := s.resolveTenantContext(r)
+	tenantContext, callerTenantID := s.resolveTenantContext(r)
+	if tenantContext == "" {
+		tenantContext = callerTenantID
+	}
+	if tenantContext == "" {
+		tenantContext = auth.RoleSuperAdmin
+	}
 	tripID := chi.URLParam(r, "tripID")
 	if tripID == "" {
 		respondError(w, http.StatusBadRequest, "tripID is required")
@@ -5161,8 +5371,11 @@ func (s *Server) handleGetWaitlist(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCancelSeat(w http.ResponseWriter, r *http.Request) {
 	tenantContext, callerTenantID := s.resolveTenantContext(r)
-	if tenantContext == "" || tenantContext == auth.RoleSuperAdmin {
+	if tenantContext == "" {
 		tenantContext = callerTenantID
+	}
+	if tenantContext == "" {
+		tenantContext = auth.RoleSuperAdmin
 	}
 
 	var req CancelSeatRequest
@@ -5225,8 +5438,11 @@ func (s *Server) handleCancelSeat(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCheckInQR(w http.ResponseWriter, r *http.Request) {
 	tenantContext, callerTenantID := s.resolveTenantContext(r)
-	if tenantContext == "" || tenantContext == auth.RoleSuperAdmin {
+	if tenantContext == "" {
 		tenantContext = callerTenantID
+	}
+	if tenantContext == "" {
+		tenantContext = auth.RoleSuperAdmin
 	}
 
 	var req CheckInQRRequest

@@ -27,11 +27,23 @@ DROP POLICY IF EXISTS tenant_isolation_policy ON seat_waitlist;
 CREATE POLICY tenant_isolation_policy ON seat_waitlist
     FOR ALL
     TO app_user
-    USING (current_setting('app.current_tenant', true) = 'SUPER_ADMIN' OR tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
-    WITH CHECK (current_setting('app.current_tenant', true) = 'SUPER_ADMIN' OR tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
+    USING (
+        CASE
+            WHEN (current_setting('app.current_tenant', true) = 'SUPER_ADMIN') THEN true
+            ELSE (tenant_id = (NULLIF(current_setting('app.current_tenant', true), ''))::uuid)
+        END
+    )
+    WITH CHECK (
+        CASE
+            WHEN (current_setting('app.current_tenant', true) = 'SUPER_ADMIN') THEN true
+            ELSE (tenant_id = (NULLIF(current_setting('app.current_tenant', true), ''))::uuid)
+        END
+    );
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON seat_waitlist TO app_user;
 
 ALTER TABLE seat_inventory ADD COLUMN IF NOT EXISTS qr_token TEXT;
 ALTER TABLE seat_inventory ADD COLUMN IF NOT EXISTS checked_in BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE seat_inventory ADD COLUMN IF NOT EXISTS checked_in_at TIMESTAMPTZ;
+ALTER TABLE buses ADD COLUMN IF NOT EXISTS detour_geometry JSONB;
+ALTER TABLE transit_events DROP CONSTRAINT IF EXISTS transit_events_event_type_check;

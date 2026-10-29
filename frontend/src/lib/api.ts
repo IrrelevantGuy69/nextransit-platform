@@ -137,6 +137,7 @@ export interface BusSnapshot {
   detour_lat?: number;
   detour_lng?: number;
   bypassed_stop_sequences?: number[];
+  detour_geometry?: [number, number][];
 }
 
 export interface IngestTelemetryRequest {
@@ -512,8 +513,11 @@ export interface CreateTenantRequest {
 
 export interface BusDetourRequest {
   bus_id: string;
+  active?: boolean;
   is_detour: boolean;
+  reason?: string;
   detour_reason?: string;
+  bypass_next_stop?: boolean;
   detour_lat?: number;
   detour_lng?: number;
   bypassed_stops?: number[];
@@ -527,6 +531,9 @@ export interface BusDetourResponse {
   detour_lat?: number;
   detour_lng?: number;
   bypassed_stops: number[];
+  geometry?: [number, number][];
+  distance_meters?: number;
+  duration_seconds?: number;
   message: string;
 }
 
