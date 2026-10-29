@@ -44,6 +44,9 @@ import {
   Server,
   Layers,
   X,
+  Briefcase,
+  Luggage,
+  GraduationCap,
 } from 'lucide-react';
 import { AuthScreen } from '@/components/auth/AuthScreen';
 import {
@@ -3355,6 +3358,11 @@ export default function Home() {
   const [isDispatchingWebhook, setIsDispatchingWebhook] = useState<boolean>(false);
   const [webhookDrawerOpen, setWebhookDrawerOpen] = useState<boolean>(false);
   const [showPublicApiModal, setShowPublicApiModal] = useState<boolean>(false);
+  const [corporateShiftSlot, setCorporateShiftSlot] = useState<string>('Morning Shift 08:30');
+  const [corporateBadgeId, setCorporateBadgeId] = useState<string>('APEX-EMP-4091');
+  const [corporateDept, setCorporateDept] = useState<string>('Staff Systems Engineering');
+  const [charterLuggage, setCharterLuggage] = useState<string>('1 Checked Suitcase (20kg)');
+  const [charterBerth, setCharterBerth] = useState<string>('Berth B (Central Terminal)');
 
   useEffect(() => {
     const container = mapContainerRef.current;
@@ -3972,6 +3980,56 @@ export default function Home() {
   const riderRemainingSeats = useMemo(() => {
     return Math.max(0, 40 - dynamicOccupancyCount);
   }, [dynamicOccupancyCount]);
+
+  const riderStopSequence = useMemo(() => {
+    return riderStopETA?.stop_sequence || (riderStopIdx + 1);
+  }, [riderStopETA, riderStopIdx]);
+
+  const busCurrentSequence = useMemo(() => {
+    return activeSnapshot?.current_stop_sequence || 1;
+  }, [activeSnapshot]);
+
+  const stopsAwayFromRider = useMemo(() => {
+    return riderStopSequence - busCurrentSequence;
+  }, [riderStopSequence, busCurrentSequence]);
+
+  const riderCountdownFormatted = useMemo(() => {
+    if (!riderStopETA) return 'Calculating...';
+    if (riderStopETA.status === 'ARRIVED') return 'At platform';
+    if (riderStopETA.status === 'ARRIVING_NOW') return 'Arriving now';
+    if (riderStopETA.status === 'PASSED') return 'Passed stop';
+    if (riderStopETA.status === 'BYPASSED_DETOUR') return 'Bypassed (Detour)';
+    const totalSec = Math.max(0, Math.round((riderStopETA.eta_minutes || 0) * 60));
+    if (totalSec <= 20) return 'Arriving now';
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    return `Arriving in ${m}m ${s < 10 ? '0' : ''}${s}s`;
+  }, [riderStopETA]);
+
+  const activeDetourDelayMinutes = useMemo(() => {
+    const delaySec = riderStopETA?.detour_delay_sec || activeSnapshot?.detour_delay_sec || 210;
+    return (delaySec / 60).toFixed(1);
+  }, [riderStopETA, activeSnapshot]);
+
+  const exactSeatCounts = useMemo(() => {
+    const booked = seats.filter((s) => s.status === 'BOOKED').length;
+    const held = seats.filter((s) => s.status === 'HELD').length;
+    const available = seats.filter((s) => s.status === 'AVAILABLE').length;
+    if (seats.length > 0) {
+      return {
+        free: available,
+        booked: booked,
+        held: held,
+        onboard: booked,
+      };
+    }
+    return {
+      free: riderRemainingSeats,
+      booked: dynamicOccupancyCount,
+      held: 2,
+      onboard: dynamicOccupancyCount,
+    };
+  }, [seats, riderRemainingSeats, dynamicOccupancyCount]);
 
   const filteredEvents = useMemo(() => {
     if (!searchQuery.trim()) return transitEvents;
@@ -5567,32 +5625,50 @@ export default function Home() {
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                       <div className="p-4 rounded-2xl bg-muted/40 border border-foreground/5">
-                        <span className="text-xs text-muted-foreground block">Approaching vehicle</span>
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs text-muted-foreground block">Approaching vehicle</span>
+                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-[#162A22]/5 text-[#162A22] font-semibold truncate max-w-[130px]">
+                            {activeSnapshot?.model || 'Transit Fleet Coach'}
+                          </span>
+                        </div>
                         <p className="mt-1 text-xl font-semibold font-sans text-primary">
-                          {riderStopETA?.fleet_code || activeSnapshot?.fleet_code || 'En route'}
+                          {riderStopETA?.fleet_code || activeSnapshot?.fleet_code || 'Fleet En Route'}
                         </p>
                         <span className="text-[11px] text-muted-foreground mt-0.5 block truncate">
-                          {riderSelectedStop?.name || 'Selected stop'}
+                          Target Stop: {riderSelectedStop?.name || 'Selected Stop'} (Stop #{riderStopSequence} on corridor)
                         </span>
                       </div>
 
                       <div className="p-4 rounded-2xl bg-muted/40 border border-foreground/5">
                         <span className="text-xs text-muted-foreground block">Distance from stop</span>
                         <p className="mt-1 text-2xl font-semibold tracking-tight font-sans text-foreground">
-                          {riderStopETA?.distance_km || 0.42} <span className="text-xs font-normal text-muted-foreground">km</span>
+                          {riderStopETA?.distance_km !== undefined ? riderStopETA.distance_km : 1.85} <span className="text-xs font-normal text-muted-foreground">km</span>
                         </p>
-                        <span className="text-[11px] text-chart-5 font-medium mt-0.5 block">
-                          Approaching corridor
+                        <span className="text-[11px] text-chart-5 font-medium mt-0.5 block truncate">
+                          {stopsAwayFromRider > 0
+                            ? `Approaching stop (${stopsAwayFromRider} stop${stopsAwayFromRider > 1 ? 's' : ''} away)`
+                            : stopsAwayFromRider === 0
+                            ? 'Arriving at stop now'
+                            : 'Passed stop (next loop)'}
                         </span>
                       </div>
 
                       <div className="p-4 rounded-2xl bg-muted/40 border border-foreground/5">
-                        <span className="text-xs text-muted-foreground block">Estimated arrival</span>
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs text-muted-foreground block">Estimated arrival</span>
+                          {(activeSnapshot?.is_detour || riderStopETA?.is_detour) && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[#FEF3C7] text-[#92400E] border border-[#F59E0B]/30 font-semibold animate-pulse">
+                              +{activeDetourDelayMinutes}m detour
+                            </span>
+                          )}
+                        </div>
                         <p className="mt-1 text-2xl font-semibold tracking-tight text-chart-5 font-sans">
-                          {riderStopETA && riderStopETA.eta_minutes <= 1 ? 'Arriving now' : `~${riderStopETA?.eta_minutes || 1.2} min`}
+                          {riderCountdownFormatted}
                         </p>
-                        <span className="text-[11px] text-muted-foreground mt-0.5 block">
-                          Live corridor tracking
+                        <span className="text-[11px] text-muted-foreground mt-0.5 block truncate">
+                          {(activeSnapshot?.is_detour || riderStopETA?.is_detour)
+                            ? `Includes +${activeDetourDelayMinutes}m detour delay`
+                            : 'Live corridor tracking'}
                         </span>
                       </div>
 
@@ -5605,10 +5681,10 @@ export default function Home() {
                             : 'Available passenger seats'}
                         </span>
                         <p className="mt-1 text-2xl font-semibold tracking-tight font-sans text-[#14281D]">
-                          {riderRemainingSeats} <span className="text-xs font-normal text-muted-foreground">seats free</span>
+                          {exactSeatCounts.free} <span className="text-xs font-normal text-muted-foreground">seats free / {exactSeatCounts.onboard} onboard</span>
                         </p>
-                        <span className="text-[11px] text-foreground/70 mt-0.5 block">
-                          {dynamicOccupancyCount} passengers currently onboard
+                        <span className="text-[11px] text-foreground/70 mt-0.5 block truncate">
+                          {exactSeatCounts.booked} booked · {exactSeatCounts.held} held
                         </span>
                       </div>
                     </div>
@@ -5728,6 +5804,78 @@ export default function Home() {
                               <span>Selected</span>
                             </span>
                           </div>
+
+                          {activeTenant.sector_type === 'CORPORATE_SHUTTLE' && (
+                            <div className="p-3.5 rounded-2xl bg-[#F7F6F2] border border-black/[0.06] flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs font-sans">
+                              <div className="flex items-center gap-2">
+                                <Briefcase className="size-4 text-[#162A22]" />
+                                <div>
+                                  <p className="font-semibold text-[#162A22]">Corporate Shift Slot & Badge</p>
+                                  <p className="text-[11px] text-muted-foreground">Assigned to corporate commuter roster</p>
+                                </div>
+                              </div>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <select
+                                  value={corporateShiftSlot}
+                                  onChange={(e) => setCorporateShiftSlot(e.target.value)}
+                                  className="px-2.5 py-1.5 rounded-xl bg-white border border-black/10 text-xs font-medium text-[#162A22] outline-none cursor-pointer"
+                                >
+                                  <option value="Morning Shift 08:30">Morning Shift 08:30</option>
+                                  <option value="Mid-Day Hybrid 13:00">Mid-Day Hybrid 13:00</option>
+                                  <option value="Evening Return 18:30">Evening Return 18:30</option>
+                                </select>
+                                <input
+                                  type="text"
+                                  value={corporateBadgeId}
+                                  onChange={(e) => setCorporateBadgeId(e.target.value)}
+                                  placeholder="Badge ID (e.g. APEX-EMP-4091)"
+                                  className="px-2.5 py-1.5 rounded-xl bg-white border border-black/10 text-xs text-[#162A22] outline-none w-36 font-sans"
+                                />
+                              </div>
+                            </div>
+                          )}
+
+                          {activeTenant.sector_type === 'PRIVATE_CHARTER' && (
+                            <div className="p-3.5 rounded-2xl bg-[#F7F6F2] border border-black/[0.06] flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs font-sans">
+                              <div className="flex items-center gap-2">
+                                <Luggage className="size-4 text-[#162A22]" />
+                                <div>
+                                  <p className="font-semibold text-[#162A22]">Commercial Charter Manifest & Baggage</p>
+                                  <p className="text-[11px] text-muted-foreground">Select baggage allowance and terminal berth preference</p>
+                                </div>
+                              </div>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <select
+                                  value={charterLuggage}
+                                  onChange={(e) => setCharterLuggage(e.target.value)}
+                                  className="px-2.5 py-1.5 rounded-xl bg-white border border-black/10 text-xs font-medium text-[#162A22] outline-none cursor-pointer"
+                                >
+                                  <option value="Cabin Only (7kg)">Cabin Only (7kg)</option>
+                                  <option value="1 Checked Suitcase (20kg)">1 Checked Suitcase (20kg)</option>
+                                  <option value="2 Checked Bags (40kg)">2 Checked Bags (40kg)</option>
+                                </select>
+                                <select
+                                  value={charterBerth}
+                                  onChange={(e) => setCharterBerth(e.target.value)}
+                                  className="px-2.5 py-1.5 rounded-xl bg-white border border-black/10 text-xs font-medium text-[#162A22] outline-none cursor-pointer"
+                                >
+                                  <option value="Berth A (North Entrance)">Berth A (North Entrance)</option>
+                                  <option value="Berth B (Central Terminal)">Berth B (Central Terminal)</option>
+                                  <option value="Berth C (Express Concourse)">Berth C (Express Concourse)</option>
+                                </select>
+                              </div>
+                            </div>
+                          )}
+
+                          {activeTenant.sector_type === 'UNIVERSITY_CAMPUS' && (
+                            <div className="p-3 rounded-2xl bg-[#E6F4EA]/60 border border-[#162A22]/10 flex items-center justify-between text-xs font-sans">
+                              <div className="flex items-center gap-2">
+                                <GraduationCap className="size-4 text-[#162A22]" />
+                                <span className="font-semibold text-[#162A22]">Active 2026/2027 Academic Semester Pass</span>
+                              </div>
+                              <span className="text-[11px] text-[#162A22]/70 font-medium">Priority Student Commuter Access</span>
+                            </div>
+                          )}
 
                           <div className="flex flex-wrap items-center gap-3">
                             {selectedSeatNumber && (
@@ -5978,7 +6126,7 @@ export default function Home() {
                         )}
                       >
                         <TriangleAlert className={cn('size-3', isAnyDetour ? 'text-amber-200' : 'text-amber-600')} />
-                        <span>{isAnyDetour ? 'Detour active (+3.5m) · Clear' : 'Traffic detour'}</span>
+                        <span>{isAnyDetour ? `Detour active (+${activeDetourDelayMinutes}m) · Clear` : 'Traffic detour'}</span>
                       </button>
 
                       <button
@@ -6398,7 +6546,7 @@ export default function Home() {
                             <div className="p-3 mb-2 rounded-2xl bg-[#FEF3D6] border border-[#B45309]/20 text-[#B45309] text-xs font-medium flex items-center justify-between">
                               <div className="flex items-center gap-2">
                                 <TriangleAlert className="size-4 shrink-0" />
-                                <span>Live Detour Active: Congested corridor bypassed with +3.5 min recovery delay</span>
+                                <span>Live Detour Active: Congested corridor bypassed with +{activeDetourDelayMinutes} min recovery delay</span>
                               </div>
                               <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-[#B45309]/10">
                                 Active Reroute
@@ -6453,7 +6601,7 @@ export default function Home() {
                                       {!isBypassed && status === 'ARRIVING_NOW' && 'Arriving now'}
                                       {!isBypassed && status === 'UPCOMING' && (
                                         eta.is_detour
-                                          ? `~${eta.eta_minutes} min (+3.5m detour)`
+                                          ? `~${eta.eta_minutes} min (+${(((eta.detour_delay_sec || activeSnapshot?.detour_delay_sec || 210) / 60)).toFixed(1)}m detour)`
                                           : `~${eta.eta_minutes} min`
                                       )}
                                     </span>

@@ -481,13 +481,25 @@ export default function FleetSpatialMap({
           (snapshots || [])
             .filter((b) => b && b.is_detour && b.detour_lat && b.detour_lng)
             .map((bus) => {
-              const detourPath: LatLngTuple[] = (bus.detour_geometry && bus.detour_geometry.length > 0)
-                ? bus.detour_geometry.map((pt) => [pt[0], pt[1]] as LatLngTuple)
+              const detourCoords = (bus.detour_waypoints && bus.detour_waypoints.length > 0)
+                ? bus.detour_waypoints
+                : (bus.detour_geometry && bus.detour_geometry.length > 0)
+                ? bus.detour_geometry
+                : null;
+
+              const detourPath: LatLngTuple[] = detourCoords
+                ? detourCoords.map((pt) => {
+                    const lat = Math.abs(pt[0]) > 50 ? pt[1] : pt[0];
+                    const lng = Math.abs(pt[0]) > 50 ? pt[0] : pt[1];
+                    return [lat, lng] as LatLngTuple;
+                  })
                 : getSplinePoints([
                     [bus.latitude, bus.longitude],
                     [bus.detour_lat!, bus.detour_lng!],
                     [bus.detour_lat! + 0.003, bus.detour_lng! + 0.003],
                   ]);
+
+              const detourDelayDisplay = (((bus.detour_delay_sec || 210) / 60)).toFixed(1);
               return (
                 <React.Fragment key={`bus-detour-${bus.bus_id}`}>
                   <Polyline
@@ -515,7 +527,7 @@ export default function FleetSpatialMap({
                     <Tooltip direction="top" offset={[0, -6]}>
                       <div className="text-center font-sans">
                         <p className="font-semibold text-xs leading-tight text-amber-900">Detour Waypoint</p>
-                        <p className="text-[10px] text-amber-700 font-medium">+3.5 min traffic bypass</p>
+                        <p className="text-[10px] text-amber-700 font-medium">+{detourDelayDisplay} min traffic bypass</p>
                       </div>
                     </Tooltip>
                   </CircleMarker>

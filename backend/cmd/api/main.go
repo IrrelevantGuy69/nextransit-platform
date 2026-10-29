@@ -455,6 +455,10 @@ type BusSnapshot struct {
 	DetourLng             *float64    `json:"detour_lng,omitempty"`
 	BypassedStopSequences []int       `json:"bypassed_stop_sequences,omitempty"`
 	DetourGeometry        [][]float64 `json:"detour_geometry,omitempty"`
+	DetourDelaySec        int         `json:"detour_delay_sec,omitempty"`
+	DetourExtraKm         float64     `json:"detour_extra_km,omitempty"`
+	DetourStepIndex       int         `json:"detour_step_index,omitempty"`
+	DetourWaypoints       [][]float64 `json:"detour_waypoints,omitempty"`
 }
 
 type IngestTelemetryRequest struct {
@@ -494,6 +498,8 @@ type StopETA struct {
 	DetourReason     string   `json:"detour_reason,omitempty"`
 	DetourLat        *float64 `json:"detour_lat,omitempty"`
 	DetourLng        *float64 `json:"detour_lng,omitempty"`
+	DetourDelaySec   int      `json:"detour_delay_sec,omitempty"`
+	DetourExtraKm    float64  `json:"detour_extra_km,omitempty"`
 }
 
 type TransitEvent struct {
@@ -645,6 +651,10 @@ type BusDetourResponse struct {
 	Geometry        [][]float64 `json:"geometry,omitempty"`
 	DistanceMeters  float64     `json:"distance_meters,omitempty"`
 	DurationSeconds float64     `json:"duration_seconds,omitempty"`
+	DetourDelaySec  int         `json:"detour_delay_sec,omitempty"`
+	DetourExtraKm   float64     `json:"detour_extra_km,omitempty"`
+	DetourStepIndex int         `json:"detour_step_index,omitempty"`
+	DetourWaypoints [][]float64 `json:"detour_waypoints,omitempty"`
 	Message         string      `json:"message"`
 }
 
@@ -2013,7 +2023,7 @@ func (s *Server) handleLatestTelemetry(w http.ResponseWriter, r *http.Request) {
 				t.route_id, COALESCE(r.code, ''), COALESCE(r.name, ''),
 				t.latitude, t.longitude, t.speed_kmh, t.heading_deg, t.occupancy,
 				COALESCE(b.is_detour, false), COALESCE(b.detour_reason, ''), b.detour_lat, b.detour_lng, COALESCE(b.bypassed_stop_sequences, '{}'),
-				b.detour_geometry
+				b.detour_geometry, COALESCE(b.detour_delay_sec, 0), COALESCE(b.detour_extra_km, 0.0), COALESCE(b.detour_step_index, 0), b.detour_waypoints
 			FROM bus_telemetry t
 			JOIN buses b ON t.bus_id = b.id
 			LEFT JOIN routes r ON t.route_id = r.id
@@ -2028,18 +2038,22 @@ func (s *Server) handleLatestTelemetry(w http.ResponseWriter, r *http.Request) {
 		for rows.Next() {
 			var sn BusSnapshot
 			var rawGeom []byte
+			var rawWaypoints []byte
 			if err := rows.Scan(
 				&sn.RecordedAt, &sn.TenantID, &sn.BusID, &sn.FleetCode, &sn.PlateNumber, &sn.Model, &sn.Capacity, &sn.BusStatus,
 				&sn.TripStatus, &sn.CurrentStopSequence, &sn.ProgressPct, &sn.TripEndedAt,
 				&sn.RouteID, &sn.RouteCode, &sn.RouteName,
 				&sn.Latitude, &sn.Longitude, &sn.SpeedKmh, &sn.HeadingDeg, &sn.Occupancy,
 				&sn.IsDetour, &sn.DetourReason, &sn.DetourLat, &sn.DetourLng, &sn.BypassedStopSequences,
-				&rawGeom,
+				&rawGeom, &sn.DetourDelaySec, &sn.DetourExtraKm, &sn.DetourStepIndex, &rawWaypoints,
 			); err != nil {
 				return err
 			}
 			if len(rawGeom) > 0 {
 				_ = json.Unmarshal(rawGeom, &sn.DetourGeometry)
+			}
+			if len(rawWaypoints) > 0 {
+				_ = json.Unmarshal(rawWaypoints, &sn.DetourWaypoints)
 			}
 			snapshots = append(snapshots, sn)
 		}
@@ -2093,6 +2107,8 @@ func (s *Server) queryETAs(w http.ResponseWriter, r *http.Request, routeID strin
 					b.detour_lat,
 					b.detour_lng,
 					COALESCE(b.bypassed_stop_sequences, '{}') as bypassed_stop_sequences,
+					COALESCE(b.detour_delay_sec, 0) as detour_delay_sec,
+					COALESCE(b.detour_extra_km, 0.0) as detour_extra_km,
 					lb.route_id as active_route_id,
 					lb.location as bus_location,
 					COALESCE(lb.speed_kmh, 0.0) as live_speed_kmh
@@ -2118,6 +2134,8 @@ func (s *Server) queryETAs(w http.ResponseWriter, r *http.Request, routeID strin
 				bi.detour_lat,
 				bi.detour_lng,
 				COALESCE(bi.bypassed_stop_sequences, '{}') as bypassed_stop_sequences,
+				COALESCE(bi.detour_delay_sec, 0) as detour_delay_sec,
+				COALESCE(bi.detour_extra_km, 0.0) as detour_extra_km,
 				COALESCE(ST_Distance(bi.bus_location, s.location), 0) as distance_meters,
 				COALESCE((
 					SELECT SUM(rss.historical_avg_seconds)::int
@@ -2145,15 +2163,17 @@ func (s *Server) queryETAs(w http.ResponseWriter, r *http.Request, routeID strin
 		for rows.Next() {
 			var e StopETA
 			var routeUUID, stopUUID, tripStatus string
-			var curSeq, histSec, maxSeq int
+			var curSeq, histSec, maxSeq, detourDelaySec int
 			var isDetour bool
 			var detourReason string
 			var detourLat, detourLng *float64
 			var bypassedSeq []int
+			var detourExtraKm float64
 			if err := rows.Scan(
 				&routeUUID, &stopUUID, &e.StopName, &e.StopCode, &e.StopLatitude, &e.StopLongitude, &e.StopSequence,
 				&e.BusID, &e.FleetCode, &e.BusSpeedKmh, &tripStatus, &curSeq,
 				&isDetour, &detourReason, &detourLat, &detourLng, &bypassedSeq,
+				&detourDelaySec, &detourExtraKm,
 				&e.DistanceMeters, &histSec, &maxSeq,
 			); err != nil {
 				return err
@@ -2168,8 +2188,14 @@ func (s *Server) queryETAs(w http.ResponseWriter, r *http.Request, routeID strin
 			e.DetourReason = detourReason
 			e.DetourLat = detourLat
 			e.DetourLng = detourLng
+			e.DetourDelaySec = detourDelaySec
+			e.DetourExtraKm = detourExtraKm
 			if isDetour {
-				e.DetourDelayMin = 3.5
+				detourDelayMin := float64(detourDelaySec) / 60.0
+				if detourDelayMin <= 0.0 {
+					detourDelayMin = 3.5
+				}
+				e.DetourDelayMin = math.Round(detourDelayMin*10.0) / 10.0
 			}
 			for _, bSeq := range bypassedSeq {
 				if bSeq == e.StopSequence {
@@ -2217,9 +2243,13 @@ func (s *Server) queryETAs(w http.ResponseWriter, r *http.Request, routeID strin
 				calcMin := math.Round(((blendedSec*0.88)/60.0)*10.0) / 10.0
 				calcMax := math.Round(((blendedSec*1.15)/60.0)*10.0) / 10.0
 				if isDetour {
-					calcEta = math.Round((calcEta+3.5)*10.0) / 10.0
-					calcMin = math.Round((calcMin+3.0)*10.0) / 10.0
-					calcMax = math.Round((calcMax+4.5)*10.0) / 10.0
+					detourDelayMin := float64(detourDelaySec) / 60.0
+					if detourDelayMin <= 0.0 {
+						detourDelayMin = 3.5
+					}
+					calcEta = math.Round((calcEta+detourDelayMin)*10.0) / 10.0
+					calcMin = math.Round((calcMin+detourDelayMin*0.85)*10.0) / 10.0
+					calcMax = math.Round((calcMax+detourDelayMin*1.25)*10.0) / 10.0
 				}
 				e.ETAMinutes = calcEta
 				e.MinETAMinutes = calcMin
@@ -2275,6 +2305,10 @@ func (s *Server) handleSimulateStep(w http.ResponseWriter, r *http.Request) {
 		DetourLat             *float64
 		DetourLng             *float64
 		BypassedStopSequences []int
+		DetourWaypoints       [][]float64
+		DetourDelaySec        int
+		DetourExtraKm         float64
+		DetourStepIndex       int
 	}
 
 	newTelemetry := make([]BusTelemetry, 0)
@@ -2285,13 +2319,15 @@ func (s *Server) handleSimulateStep(w http.ResponseWriter, r *http.Request) {
 		if req.BusID != nil && *req.BusID != "" {
 			busRows, err = tx.Query(r.Context(), `
 				SELECT id, tenant_id, fleet_code, trip_status, current_stop_sequence, progress_pct, trip_ended_at,
-				       COALESCE(is_detour, false), COALESCE(detour_reason, ''), detour_lat, detour_lng, COALESCE(bypassed_stop_sequences, '{}')
+				       COALESCE(is_detour, false), COALESCE(detour_reason, ''), detour_lat, detour_lng, COALESCE(bypassed_stop_sequences, '{}'),
+				       detour_waypoints, COALESCE(detour_delay_sec, 0), COALESCE(detour_extra_km, 0.0), COALESCE(detour_step_index, 0)
 				FROM buses
 				WHERE status = 'ACTIVE' AND id = $1::uuid`, *req.BusID)
 		} else {
 			busRows, err = tx.Query(r.Context(), `
 				SELECT id, tenant_id, fleet_code, trip_status, current_stop_sequence, progress_pct, trip_ended_at,
-				       COALESCE(is_detour, false), COALESCE(detour_reason, ''), detour_lat, detour_lng, COALESCE(bypassed_stop_sequences, '{}')
+				       COALESCE(is_detour, false), COALESCE(detour_reason, ''), detour_lat, detour_lng, COALESCE(bypassed_stop_sequences, '{}'),
+				       detour_waypoints, COALESCE(detour_delay_sec, 0), COALESCE(detour_extra_km, 0.0), COALESCE(detour_step_index, 0)
 				FROM buses
 				WHERE status = 'ACTIVE'`)
 		}
@@ -2303,8 +2339,16 @@ func (s *Server) handleSimulateStep(w http.ResponseWriter, r *http.Request) {
 		var buses []SimBus
 		for busRows.Next() {
 			var b SimBus
-			if err := busRows.Scan(&b.ID, &b.TenantID, &b.FleetCode, &b.TripStatus, &b.CurrentStopSequence, &b.ProgressPct, &b.TripEndedAt, &b.IsDetour, &b.DetourReason, &b.DetourLat, &b.DetourLng, &b.BypassedStopSequences); err != nil {
+			var rawWaypoints []byte
+			if err := busRows.Scan(
+				&b.ID, &b.TenantID, &b.FleetCode, &b.TripStatus, &b.CurrentStopSequence, &b.ProgressPct, &b.TripEndedAt,
+				&b.IsDetour, &b.DetourReason, &b.DetourLat, &b.DetourLng, &b.BypassedStopSequences,
+				&rawWaypoints, &b.DetourDelaySec, &b.DetourExtraKm, &b.DetourStepIndex,
+			); err != nil {
 				return err
+			}
+			if len(rawWaypoints) > 0 {
+				_ = json.Unmarshal(rawWaypoints, &b.DetourWaypoints)
 			}
 			buses = append(buses, b)
 		}
@@ -2394,7 +2438,80 @@ func (s *Server) handleSimulateStep(w http.ResponseWriter, r *http.Request) {
 			var newEndedAt *time.Time
 			var newLat, newLng, newSpeed, newHeading float64
 
-			if b.TripStatus == "JOURNEY_ENDED" || b.ProgressPct >= 100.0 {
+			isDetourActive := b.IsDetour
+			detourStepIdx := b.DetourStepIndex
+			detourDelaySec := b.DetourDelaySec
+			detourExtraKm := b.DetourExtraKm
+
+			if b.IsDetour && len(b.DetourWaypoints) > 0 {
+				nextStep := b.DetourStepIndex + 1
+				var targetRejoinStop SimStop
+				for _, st := range stops {
+					if st.Sequence >= b.CurrentStopSequence {
+						isBypassed := false
+						for _, bp := range b.BypassedStopSequences {
+							if bp == st.Sequence {
+								isBypassed = true
+								break
+							}
+						}
+						if !isBypassed {
+							targetRejoinStop = st
+							break
+						}
+					}
+				}
+				if targetRejoinStop.ID == "" {
+					targetRejoinStop = stops[len(stops)-1]
+				}
+
+				currPt := b.DetourWaypoints[b.DetourStepIndex]
+				if b.DetourStepIndex >= len(b.DetourWaypoints) {
+					currPt = b.DetourWaypoints[len(b.DetourWaypoints)-1]
+				}
+				distToRejoin := routing.HaversineDistanceMeters(currPt[1], currPt[0], targetRejoinStop.Latitude, targetRejoinStop.Longitude)
+
+				if nextStep >= len(b.DetourWaypoints) || (distToRejoin < 60.0 && nextStep > 1) {
+					isDetourActive = false
+					detourStepIdx = 0
+					detourDelaySec = 0
+					detourExtraKm = 0.0
+					newLat = targetRejoinStop.Latitude
+					newLng = targetRejoinStop.Longitude
+					newSeq = targetRejoinStop.Sequence
+					newStatus = "IN_TRANSIT"
+					newSpeed = 38.0
+					newHeading = lastHeading
+					newProg = math.Min(95.0, (float64(newSeq)/float64(len(stops)))*100.0)
+
+					_, _ = tx.Exec(r.Context(), `
+						INSERT INTO transit_events (id, tenant_id, bus_id, route_id, stop_id, event_type, triggered_at, distance_meters)
+						VALUES (gen_random_uuid(), $1, $2, $3, $4, 'EVENT_DETOUR_REJOINED', NOW(), 0)`,
+						b.TenantID, b.ID, *routeID, targetRejoinStop.ID)
+				} else {
+					detourStepIdx = nextStep
+					stepPt := b.DetourWaypoints[nextStep]
+					newLng = stepPt[0]
+					newLat = stepPt[1]
+					prevPt := b.DetourWaypoints[nextStep-1]
+					newHeading = calculateHeading(prevPt[1], prevPt[0], newLat, newLng)
+					newSpeed = 32.0 + math.Mod(float64(time.Now().UnixNano()%1000)/1000.0*14.0, 14.0)
+					newStatus = "IN_TRANSIT"
+					newSeq = b.CurrentStopSequence
+
+					fracRem := 1.0 - (float64(nextStep) / float64(len(b.DetourWaypoints)))
+					if fracRem < 0.05 {
+						fracRem = 0.05
+					}
+					detourDelaySec = int(float64(b.DetourDelaySec) * fracRem)
+					detourExtraKm = math.Round(b.DetourExtraKm*fracRem*100.0) / 100.0
+
+					newProg = b.ProgressPct + (100.0 / float64(len(b.DetourWaypoints)*2))
+					if newProg >= 95.0 {
+						newProg = 95.0
+					}
+				}
+			} else if b.TripStatus == "JOURNEY_ENDED" || b.ProgressPct >= 100.0 {
 				newProg = stepDelta
 				newSeq = 1
 				newStatus = "IN_TRANSIT"
@@ -2484,11 +2601,22 @@ func (s *Server) handleSimulateStep(w http.ResponseWriter, r *http.Request) {
 				newOcc = 32
 			}
 
-			_, err = tx.Exec(r.Context(), `
-				UPDATE buses
-				SET trip_status = $1, current_stop_sequence = $2, progress_pct = $3, trip_ended_at = $4
-				WHERE id = $5`,
-				newStatus, newSeq, newProg, newEndedAt, b.ID)
+			if isDetourActive {
+				_, err = tx.Exec(r.Context(), `
+					UPDATE buses
+					SET trip_status = $1, current_stop_sequence = $2, progress_pct = $3, trip_ended_at = $4,
+					    detour_step_index = $5, detour_delay_sec = $6, detour_extra_km = $7
+					WHERE id = $8`,
+					newStatus, newSeq, newProg, newEndedAt, detourStepIdx, detourDelaySec, detourExtraKm, b.ID)
+			} else {
+				_, err = tx.Exec(r.Context(), `
+					UPDATE buses
+					SET trip_status = $1, current_stop_sequence = $2, progress_pct = $3, trip_ended_at = $4,
+					    is_detour = false, detour_reason = '', detour_lat = NULL, detour_lng = NULL, bypassed_stop_sequences = '{}',
+					    detour_geometry = NULL, detour_waypoints = '[]', detour_delay_sec = 0, detour_extra_km = 0, detour_step_index = 0
+					WHERE id = $5`,
+					newStatus, newSeq, newProg, newEndedAt, b.ID)
+			}
 			if err != nil {
 				return err
 			}
@@ -2861,6 +2989,56 @@ func (s *Server) handleGetSeats(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to query seats: "+err.Error())
 		return
+	}
+
+	if len(seats) == 0 {
+		_ = db.WithTenantTx(r.Context(), s.pool.Pool, tenantContext, func(tx pgx.Tx) error {
+			var tripTenantID string
+			_ = tx.QueryRow(r.Context(), `SELECT tenant_id FROM trips WHERE id = $1::uuid`, tripID).Scan(&tripTenantID)
+			if tripTenantID == "" {
+				tripTenantID = "11111111-1111-1111-1111-111111111111"
+			}
+			cols := []string{"A", "B", "C", "D"}
+			for rNum := 1; rNum <= 10; rNum++ {
+				for _, c := range cols {
+					seatNum := fmt.Sprintf("%d%s", rNum, c)
+					hashSum := 0
+					for i := 0; i < len(tripID); i++ {
+						hashSum += int(tripID[i]) * (rNum*7 + int(c[0]))
+					}
+					modVal := hashSum % 100
+					status := "AVAILABLE"
+					if modVal < 52 {
+						status = "BOOKED"
+					} else if modVal < 66 {
+						status = "HELD"
+					}
+					var heldUntil *time.Time
+					remSec := 0
+					if status == "HELD" {
+						t := time.Now().Add(120 * time.Second)
+						heldUntil = &t
+						remSec = 120
+					}
+					var seatID string
+					_ = tx.QueryRow(r.Context(), `
+						INSERT INTO seat_inventory (id, tenant_id, trip_id, seat_number, status, held_until)
+						VALUES (gen_random_uuid(), $1::uuid, $2::uuid, $3, $4, $5)
+						ON CONFLICT (trip_id, seat_number) DO UPDATE SET status = EXCLUDED.status
+						RETURNING id::text`, tripTenantID, tripID, seatNum, status, heldUntil).Scan(&seatID)
+					seats = append(seats, SeatInventory{
+						ID:           seatID,
+						TenantID:     tripTenantID,
+						TripID:       tripID,
+						SeatNumber:   seatNum,
+						Status:       status,
+						HeldUntil:    heldUntil,
+						RemainingSec: remSec,
+					})
+				}
+			}
+			return nil
+		})
 	}
 
 	respondJSON(w, http.StatusOK, seats)
@@ -4923,8 +5101,18 @@ func (s *Server) ensureSchema(ctx context.Context) error {
 		`CREATE POLICY tenant_isolation_policy ON seat_waitlist
 			FOR ALL
 			TO app_user
-			USING (current_setting('app.current_tenant', true) = 'SUPER_ADMIN' OR tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
-			WITH CHECK (current_setting('app.current_tenant', true) = 'SUPER_ADMIN' OR tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)`,
+			USING (
+				CASE
+					WHEN (current_setting('app.current_tenant', true) = 'SUPER_ADMIN') THEN true
+					ELSE (tenant_id = (NULLIF(current_setting('app.current_tenant', true), ''))::uuid)
+				END
+			)
+			WITH CHECK (
+				CASE
+					WHEN (current_setting('app.current_tenant', true) = 'SUPER_ADMIN') THEN true
+					ELSE (tenant_id = (NULLIF(current_setting('app.current_tenant', true), ''))::uuid)
+				END
+			)`,
 		`GRANT SELECT, INSERT, UPDATE, DELETE ON seat_waitlist TO app_user`,
 		`ALTER TABLE seat_inventory ADD COLUMN IF NOT EXISTS qr_token TEXT`,
 		`ALTER TABLE seat_inventory ADD COLUMN IF NOT EXISTS checked_in BOOLEAN NOT NULL DEFAULT FALSE`,
@@ -5131,16 +5319,6 @@ func (s *Server) handleBusDetour(w http.ResponseWriter, r *http.Request) {
 		var targetSeq int
 
 		if req.IsDetour {
-			if req.DetourLat != nil && req.DetourLng != nil && *req.DetourLat != 0 {
-				detourLat = req.DetourLat
-				detourLng = req.DetourLng
-			} else {
-				dLat := busLat + 0.0055
-				dLng := busLng + 0.0070
-				detourLat = &dLat
-				detourLng = &dLng
-			}
-
 			var curSeq int
 			_ = tx.QueryRow(r.Context(), `SELECT current_stop_sequence FROM buses WHERE id = $1::uuid`, req.BusID).Scan(&curSeq)
 			if curSeq <= 0 {
@@ -5175,12 +5353,38 @@ func (s *Server) handleBusDetour(w http.ResponseWriter, r *http.Request) {
 				LIMIT 1`, targetSeq, req.BusID).Scan(&nextStopLat, &nextStopLng)
 
 			if nextStopLat == 0 {
-				nextStopLat = *detourLat + 0.004
-				nextStopLng = *detourLng + 0.004
+				nextStopLat = busLat + 0.012
+				nextStopLng = busLng + 0.012
+			}
+
+			if req.DetourLat != nil && req.DetourLng != nil && *req.DetourLat != 0 {
+				detourLat = req.DetourLat
+				detourLng = req.DetourLng
+			} else {
+				dLat := nextStopLat - busLat
+				dLng := nextStopLng - busLng
+				distNorm := math.Hypot(dLat, dLng)
+				if distNorm < 0.0001 {
+					distNorm = 0.01
+					dLat = 0.01
+					dLng = 0.0
+				}
+				perpLat := -dLng / distNorm * 0.016
+				perpLng := dLat / distNorm * 0.016
+				midLat := (busLat+nextStopLat)/2.0 + perpLat
+				midLng := (busLng+nextStopLng)/2.0 + perpLng
+				detourLat = &midLat
+				detourLng = &midLng
+			}
+
+			waypoints := [][2]float64{
+				{busLng, busLat},
+				{*detourLng, *detourLat},
+				{nextStopLng, nextStopLat},
 			}
 
 			if s.router != nil {
-				routeRes, rErr := s.router.GetRoute(r.Context(), *detourLat, *detourLng, nextStopLat, nextStopLng)
+				routeRes, rErr := s.router.GetMultiPointRoute(r.Context(), waypoints)
 				if rErr == nil && routeRes != nil {
 					resp.Geometry = routeRes.Coordinates
 					resp.DistanceMeters = routeRes.DistanceMeters
@@ -5188,15 +5392,39 @@ func (s *Server) handleBusDetour(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-			if len(resp.Geometry) > 0 {
-				geoJSONBytes, _ = json.Marshal(resp.Geometry)
+			if len(resp.Geometry) == 0 {
+				resp.Geometry = [][]float64{
+					{busLng, busLat},
+					{*detourLng, *detourLat},
+					{nextStopLng, nextStopLat},
+				}
+				resp.DistanceMeters = 3500.0
+				resp.DurationSeconds = 480.0
 			}
+
+			baselineDist := routing.HaversineDistanceMeters(busLat, busLng, nextStopLat, nextStopLng)
+			extraKm := math.Max(0.6, (resp.DistanceMeters-baselineDist)/1000.0)
+			delaySec := int(math.Max(180.0, resp.DurationSeconds-(baselineDist/9.5)))
+			if delaySec > 1800 {
+				delaySec = 420
+			}
+
+			resp.DetourDelaySec = delaySec
+			resp.DetourExtraKm = math.Round(extraKm*100.0) / 100.0
+			resp.DetourStepIndex = 0
+			resp.DetourWaypoints = resp.Geometry
+
+			geoJSONBytes, _ = json.Marshal(resp.Geometry)
 
 			_, err := tx.Exec(r.Context(), `
 				UPDATE buses
-				SET is_detour = true, detour_reason = $1, detour_lat = $2, detour_lng = $3, bypassed_stop_sequences = $4, detour_geometry = $5, current_stop_sequence = $6
-				WHERE id = $7::uuid`,
-				req.DetourReason, detourLat, detourLng, resp.BypassedStops, geoJSONBytes, targetSeq, req.BusID,
+				SET is_detour = true, detour_reason = $1, detour_lat = $2, detour_lng = $3,
+				    bypassed_stop_sequences = $4, detour_geometry = $5, detour_waypoints = $5,
+				    detour_delay_sec = $6, detour_extra_km = $7, detour_step_index = 0,
+				    current_stop_sequence = $8
+				WHERE id = $9::uuid`,
+				req.DetourReason, detourLat, detourLng, resp.BypassedStops, geoJSONBytes,
+				delaySec, resp.DetourExtraKm, targetSeq, req.BusID,
 			)
 			if err != nil {
 				return err
@@ -5204,7 +5432,9 @@ func (s *Server) handleBusDetour(w http.ResponseWriter, r *http.Request) {
 		} else {
 			_, err := tx.Exec(r.Context(), `
 				UPDATE buses
-				SET is_detour = false, detour_reason = '', detour_lat = NULL, detour_lng = NULL, bypassed_stop_sequences = '{}', detour_geometry = NULL
+				SET is_detour = false, detour_reason = '', detour_lat = NULL, detour_lng = NULL,
+				    bypassed_stop_sequences = '{}', detour_geometry = NULL, detour_waypoints = '[]',
+				    detour_delay_sec = 0, detour_extra_km = 0, detour_step_index = 0
 				WHERE id = $1::uuid`, req.BusID,
 			)
 			if err != nil {
@@ -5221,7 +5451,7 @@ func (s *Server) handleBusDetour(w http.ResponseWriter, r *http.Request) {
 			eventType = "DETOUR_ACTIVATED"
 			resp.Message = fmt.Sprintf("Detour active: rerouted via waypoint (%0.4f, %0.4f). Bypassing stops %v.", *detourLat, *detourLng, resp.BypassedStops)
 		} else {
-			eventType = "DETOUR_CLEARED"
+			eventType = "EVENT_DETOUR_REJOINED"
 			resp.Message = "Detour cleared: fleet returned to primary corridor path."
 		}
 

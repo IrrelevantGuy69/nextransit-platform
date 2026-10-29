@@ -138,6 +138,10 @@ export interface BusSnapshot {
   detour_lng?: number;
   bypassed_stop_sequences?: number[];
   detour_geometry?: [number, number][];
+  detour_delay_sec?: number;
+  detour_extra_km?: number;
+  detour_step_index?: number;
+  detour_waypoints?: [number, number][];
 }
 
 export interface IngestTelemetryRequest {
@@ -177,6 +181,8 @@ export interface StopETA {
   detour_reason?: string;
   detour_lat?: number;
   detour_lng?: number;
+  detour_delay_sec?: number;
+  detour_extra_km?: number;
 }
 
 export interface TransitEvent {
@@ -534,6 +540,10 @@ export interface BusDetourResponse {
   geometry?: [number, number][];
   distance_meters?: number;
   duration_seconds?: number;
+  detour_delay_sec?: number;
+  detour_extra_km?: number;
+  detour_step_index?: number;
+  detour_waypoints?: [number, number][];
   message: string;
 }
 
