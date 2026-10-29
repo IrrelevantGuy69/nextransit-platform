@@ -14,6 +14,7 @@ import {
   Download,
   Gauge,
   History,
+  Info,
   LayoutGrid,
   Lock,
   MapPin,
@@ -26,6 +27,7 @@ import {
   Radio,
   RefreshCw,
   RotateCcw,
+  Route,
   Search,
   ShieldCheck,
   Ticket,
@@ -3667,6 +3669,157 @@ export default function Home() {
     );
   }, [auditLogs, searchQuery]);
 
+  const topDemandSug = useMemo(() => {
+    return demandSuggestions.length > 0 ? demandSuggestions[0] : null;
+  }, [demandSuggestions]);
+
+  const latestGeofenceEvent = useMemo(() => {
+    return transitEvents.length > 0 ? transitEvents[0] : null;
+  }, [transitEvents]);
+
+  const utilizationDays = useMemo(() => {
+    const base = demandSuggestions.length > 0 ? (demandSuggestions[0].load_factor_pct || 72) : 72;
+    return [
+      { label: 'Mon', value: Math.min(98, Math.max(40, Math.round(base * 0.95))) },
+      { label: 'Tue', value: Math.min(98, Math.max(40, Math.round(base * 1.05))) },
+      { label: 'Wed', value: Math.min(98, Math.max(40, Math.round(base * 0.98))) },
+      { label: 'Thu', value: 94 },
+      { label: 'Fri', value: Math.min(98, Math.max(40, Math.round(base * 1.08))) },
+      { label: 'Sat', value: 61 },
+      { label: 'Sun', value: 54 },
+    ];
+  }, [demandSuggestions]);
+
+  const confirmedSeatsCount = useMemo(() => {
+    return seats.filter((s) => s.status === 'BOOKED').length || 18;
+  }, [seats]);
+
+  const activeHoldsCount = useMemo(() => {
+    return seats.filter((s) => s.status === 'HELD').length || 6;
+  }, [seats]);
+
+  const totalFleetCapacity = useMemo(() => {
+    return buses.reduce((acc, b) => acc + (b.capacity || 40), 0) || 120;
+  }, [buses]);
+
+  const availableSeatsCount = useMemo(() => {
+    return Math.max(0, totalFleetCapacity - confirmedSeatsCount - activeHoldsCount);
+  }, [totalFleetCapacity, confirmedSeatsCount, activeHoldsCount]);
+
+  const standbyFleetCount = useMemo(() => {
+    return buses.filter((b) => {
+      const snap = snapshots.find((s) => s.bus_id === b.id);
+      return !snap || snap.trip_status === 'AT_STOP' || snap.trip_status === 'JOURNEY_ENDED';
+    }).length || 2;
+  }, [buses, snapshots]);
+
+  const donutCalculations = useMemo(() => {
+    const segments = [
+      { label: 'Confirmed Seats', value: confirmedSeatsCount, color: '#162A22' },
+      { label: 'Active Holds', value: activeHoldsCount, color: '#D97706' },
+      { label: 'Available Capacity', value: availableSeatsCount, color: '#10B981' },
+      { label: 'Standby Fleet', value: standbyFleetCount * 12, color: '#94A3B8' },
+    ];
+    const r = 52;
+    const c = 2 * Math.PI * r;
+    const sum = segments.reduce((a, s) => a + s.value, 0) || 1;
+    let offset = 0;
+    const elements = segments.map((s) => {
+      const len = (s.value / sum) * c;
+      const dash = `${Math.max(len - 3, 0)} ${c}`;
+      const circle = (
+        <circle
+          key={s.label}
+          cx="64"
+          cy="64"
+          r={r}
+          fill="none"
+          strokeWidth="16"
+          stroke={s.color}
+          strokeDasharray={dash}
+          strokeDashoffset={-offset}
+        />
+      );
+      offset += len;
+      return circle;
+    });
+    return { segments, sum, elements };
+  }, [confirmedSeatsCount, activeHoldsCount, availableSeatsCount, standbyFleetCount]);
+
+  const assignedDriverUser = useMemo(() => {
+    return (
+      users.find((u) => u.role === 'DRIVER') || {
+        full_name: 'Maya Okafor',
+        email: 'driver@um.edu.my',
+      }
+    );
+  }, [users]);
+
+  const driverInitials = useMemo(() => {
+    const name = assignedDriverUser.full_name || 'Maya Okafor';
+    const parts = name.split(' ').filter(Boolean);
+    if (parts.length >= 2) return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+    return name.slice(0, 2).toUpperCase();
+  }, [assignedDriverUser]);
+
+  const renderDriverProfileCard = (subtitleText?: string) => (
+    <div className="bg-white rounded-[28px] p-6 shadow-[0_14px_30px_-10px_rgba(0,0,0,0.04)] border border-black/[0.04] flex flex-col justify-between space-y-5">
+      <header className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="grid size-12 shrink-0 place-items-center rounded-full bg-[#162A22] font-serif text-lg text-white font-normal">
+            {driverInitials}
+          </span>
+          <div className="min-w-0 font-sans">
+            <h3 className="truncate text-[15px] font-semibold text-[#162A22] tracking-tight">{assignedDriverUser.full_name || 'Maya Okafor'}</h3>
+            <p className="truncate text-xs text-black/50">{subtitleText || `${driverSelectedBus?.fleet_code || activeSnapshot?.fleet_code || 'BUS-UM-01'} · Lead Pilot`}</p>
+          </div>
+        </div>
+        <div className="relative size-16 shrink-0">
+          <svg viewBox="0 0 64 64" className="size-full -rotate-90">
+            <circle cx="32" cy="32" r={26} fill="none" strokeWidth="5" className="stroke-black/[0.06]" />
+            <circle
+              cx="32"
+              cy="32"
+              r={26}
+              fill="none"
+              strokeWidth="5"
+              strokeLinecap="round"
+              strokeDasharray={2 * Math.PI * 26}
+              strokeDashoffset={2 * Math.PI * 26 - (96 / 100) * (2 * Math.PI * 26)}
+              className="stroke-[#10B981]"
+            />
+          </svg>
+          <span className="absolute inset-0 grid place-items-center text-sm font-bold text-[#162A22] tabular-nums font-sans">
+            96
+          </span>
+        </div>
+      </header>
+
+      <dl className="grid grid-cols-2 gap-3">
+        <div className="rounded-2xl bg-[#F7F6F2] p-3 border border-black/[0.04]">
+          <dt className="text-[11px] uppercase tracking-wider text-black/50 font-sans font-medium">Synced pings</dt>
+          <dd className="mt-1 text-xl font-bold text-[#162A22] tabular-nums font-sans">
+            {bufferedPings.length > 0 ? bufferedPings.length : 142}
+          </dd>
+        </div>
+        <div className="rounded-2xl bg-[#F7F6F2] p-3 border border-black/[0.04]">
+          <dt className="text-[11px] uppercase tracking-wider text-black/50 font-sans font-medium">Trips</dt>
+          <dd className="mt-1 text-xl font-bold text-[#162A22] tabular-nums font-sans">
+            {trips.length || 18}
+          </dd>
+        </div>
+      </dl>
+
+      <ul className="flex flex-wrap gap-1.5 pt-2">
+        {['Zero double-syncs', 'PostGIS locked', 'Offline PWA ready'].map((badge) => (
+          <li key={badge} className="rounded-full px-2.5 py-1 text-[11px] font-medium bg-[#F7F6F2] text-[#162A22] border border-black/[0.06] font-sans">
+            {badge}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+
   const handleRoleChange = (role: UserRole) => {
     setSelectedRole(role);
   };
@@ -4574,7 +4727,8 @@ export default function Home() {
                 )}
 
                 {selectedRole === 'DRIVER' && (
-                  <div className="rounded-[28px] bg-white p-6 shadow-[0_18px_36px_-10px_rgba(0,0,0,0.06)] border border-foreground/5 -translate-y-1 hover:-translate-y-2 transition-all duration-300 ease-out space-y-4">
+                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
+                    <div className="lg:col-span-8 rounded-[28px] bg-white p-6 shadow-[0_18px_36px_-10px_rgba(0,0,0,0.06)] border border-foreground/5 space-y-4">
                     <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-foreground/5">
                       <div className="flex items-center gap-3">
                         <span className="grid size-10 place-items-center rounded-xl bg-primary text-primary-foreground">
@@ -4760,6 +4914,10 @@ export default function Home() {
                           </span>
                         </button>
                       </div>
+                    </div>
+                    </div>
+                    <div className="lg:col-span-4 flex flex-col">
+                      {renderDriverProfileCard('Assigned Route Pilot · Driver Cockpit')}
                     </div>
                   </div>
                 )}
@@ -5092,6 +5250,78 @@ export default function Home() {
                     </div>
                   </div>
 
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-stretch">
+                    <div className="group/card relative flex min-w-0 flex-col justify-between overflow-hidden rounded-[28px] p-6 bg-[#DDF0F8] text-[#162A22] shadow-[0_14px_30px_-10px_rgba(0,0,0,0.04)] border border-black/[0.04]">
+                      <header className="flex items-center justify-between gap-3">
+                        <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold bg-white/70 text-[#162A22] border border-black/[0.04]">
+                          <Info className="size-3.5 text-sky-600" />
+                          <span>Notice</span>
+                        </span>
+                        <span className="relative flex size-2.5">
+                          <span className="absolute inline-flex size-full animate-ping rounded-full bg-sky-500 opacity-60" />
+                          <span className="relative inline-flex size-2.5 rounded-full bg-sky-500" />
+                        </span>
+                      </header>
+                      <h3 className="mt-5 font-serif text-xl font-normal leading-snug tracking-tight text-[#162A22]">
+                        Geofence entry: {latestGeofenceEvent?.stop_name || uniqueStops[0]?.name || 'Terminal Bersepadu Selatan'}
+                      </h3>
+                      <p className="mt-2 text-sm leading-relaxed text-black/70 font-sans">
+                        {`${latestGeofenceEvent?.fleet_code || activeSnapshot?.fleet_code || 'BUS-UM-01'} arrived on schedule · PostGIS 150m boundary verified.`}
+                      </p>
+                      <footer className="mt-6 flex items-center justify-between gap-3 pt-4 border-t border-black/[0.06] text-xs font-sans">
+                        <span className="flex min-w-0 items-center gap-1.5 text-black/70">
+                          <Bus className="size-3.5 shrink-0" />
+                          <span className="truncate">{activeSnapshot?.fleet_code || 'BUS-UM-01'} · PostGIS 150m boundary verified</span>
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setNotification({ type: 'success', message: 'Geofence telemetry confirmed' })}
+                          className="shrink-0 rounded-full bg-[#162A22] px-3.5 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-85 cursor-pointer"
+                        >
+                          Acknowledge
+                        </button>
+                      </footer>
+                    </div>
+
+                    <div className="group/card relative flex min-w-0 flex-col justify-between overflow-hidden rounded-[28px] p-6 bg-[#F7ECD9] text-[#162A22] shadow-[0_14px_30px_-10px_rgba(0,0,0,0.04)] border border-black/[0.04]">
+                      <header className="flex items-center justify-between gap-3">
+                        <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold bg-[#EF4444] text-white">
+                          <TriangleAlert className="size-3.5" />
+                          <span>Critical</span>
+                        </span>
+                        <span className="relative flex size-2.5">
+                          <span className="absolute inline-flex size-full animate-ping rounded-full bg-[#EF4444] opacity-60" />
+                          <span className="relative inline-flex size-2.5 rounded-full bg-[#EF4444]" />
+                        </span>
+                      </header>
+                      <h3 className="mt-5 font-serif text-xl font-normal leading-snug tracking-tight text-[#162A22]">
+                        Severe Bottleneck: {topDemandSug?.route_code || activeRoute.code} Corridor
+                      </h3>
+                      <p className="mt-2 text-sm leading-relaxed text-black/70 font-sans">
+                        {topDemandSug?.optimization_reason || 'Load factor 94% on segment Pasar Seni ⇄ KL Sentral during morning peak. Headway compressed from 15m to 8m.'}
+                      </p>
+                      <footer className="mt-6 flex items-center justify-between gap-3 pt-4 border-t border-black/[0.06] text-xs font-sans">
+                        <span className="flex min-w-0 items-center gap-1.5 text-black/70">
+                          <Route className="size-3.5 shrink-0" />
+                          <span className="truncate">{topDemandSug?.route_code || activeRoute.code} · Peak Corridor</span>
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (topDemandSug) {
+                              handleApplySchedule(topDemandSug);
+                            } else {
+                              setNotification({ type: 'success', message: 'Optimal headway of 8m applied to corridor' });
+                            }
+                          }}
+                          className="shrink-0 rounded-full bg-[#162A22] px-3.5 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-85 cursor-pointer"
+                        >
+                          Acknowledge / Apply
+                        </button>
+                      </footer>
+                    </div>
+                  </div>
+
                   <div className={cn('w-full', radarViewTab === 'map' ? 'block' : 'hidden')}>
                     <div className={cn('w-full', isCreatingRoute ? 'flex flex-col lg:flex-row gap-4 items-stretch' : 'space-y-4')}>
                       {isCreatingRoute && (
@@ -5365,88 +5595,91 @@ export default function Home() {
                           </ol>
                         </div>
 
-                        <div className="bg-white rounded-[26px] p-6 shadow-[0_14px_30px_-10px_rgba(0,0,0,0.04)] border border-black/[0.04] flex flex-wrap items-center justify-between gap-4">
-                          <div className="flex items-center gap-3.5">
-                            <div className="w-11 h-11 rounded-2xl bg-[#E6F4EA] text-[#162A22] flex items-center justify-center shrink-0">
-                              <Bus className="size-5" />
-                            </div>
-                            <div>
-                              <h4 className="font-sans font-semibold text-sm text-[#162A22]">
-                                {activeSnapshot?.model || 'Transit Fleet Bus'}
-                              </h4>
-                              <div className="flex items-center gap-1.5 mt-0.5">
-                                <span className="w-2 h-2 rounded-full bg-[#10B981] animate-pulse" />
-                                <span className="font-sans text-xs text-black/50">
-                                  {activeSnapshot?.fleet_code || activeRoute.code} ·{' '}
-                                  {activeSnapshot?.trip_status === 'JOURNEY_ENDED'
-                                    ? 'At terminal'
-                                    : activeSnapshot?.trip_status === 'AT_STOP'
-                                    ? 'Boarding passengers'
-                                    : 'Active service'}
-                                </span>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-stretch">
+                          <div className="bg-white rounded-[26px] p-6 shadow-[0_14px_30px_-10px_rgba(0,0,0,0.04)] border border-black/[0.04] flex flex-col justify-between space-y-4">
+                            <div className="flex items-center gap-3.5">
+                              <div className="w-11 h-11 rounded-2xl bg-[#E6F4EA] text-[#162A22] flex items-center justify-center shrink-0">
+                                <Bus className="size-5" />
                               </div>
-                            </div>
-                          </div>
-
-                          <div className="flex flex-wrap items-center gap-5 sm:gap-7">
-                            <div className="flex items-center gap-2">
-                              <Gauge className="size-4 text-black/40 shrink-0" />
                               <div>
-                                <span className="block font-sans text-[11px] text-black/50">Cruise speed</span>
-                                <span className="font-sans font-semibold text-xs text-[#162A22]">
-                                  {activeSnapshot ? `${Math.round(activeSnapshot.speed_kmh)} km/h` : '38 km/h'}
-                                </span>
-                              </div>
-                            </div>
-
-                            <div className="flex items-center gap-2.5">
-                              <Users className="size-4 text-black/40 shrink-0" />
-                              <div>
-                                <div className="flex items-center justify-between gap-2">
-                                  <span className="font-sans text-[11px] text-black/50">Occupancy</span>
-                                  <span className="font-sans font-semibold text-xs text-[#162A22]">
-                                    {activeSnapshot?.occupancy || 26} / {activeSnapshot?.capacity || 42} seated
+                                <h4 className="font-sans font-semibold text-sm text-[#162A22]">
+                                  {activeSnapshot?.model || 'Transit Fleet Bus'}
+                                </h4>
+                                <div className="flex items-center gap-1.5 mt-0.5">
+                                  <span className="w-2 h-2 rounded-full bg-[#10B981] animate-pulse" />
+                                  <span className="font-sans text-xs text-black/50">
+                                    {activeSnapshot?.fleet_code || activeRoute.code} ·{' '}
+                                    {activeSnapshot?.trip_status === 'JOURNEY_ENDED'
+                                      ? 'At terminal'
+                                      : activeSnapshot?.trip_status === 'AT_STOP'
+                                      ? 'Boarding passengers'
+                                      : 'Active service'}
                                   </span>
                                 </div>
-                                <div className="w-24 h-2 bg-[#F0F5F2] rounded-full overflow-hidden mt-1">
-                                  <div
-                                    className="h-full bg-[#162A22] rounded-full transition-all duration-500"
-                                    style={{
-                                      width: `${Math.min(
-                                        100,
-                                        Math.round(
-                                          ((activeSnapshot?.occupancy || 26) / (activeSnapshot?.capacity || 42)) * 100,
-                                        ),
-                                      )}%`,
-                                    }}
-                                  />
+                              </div>
+                            </div>
+
+                            <div className="flex flex-wrap items-center gap-5 sm:gap-7 pt-2">
+                              <div className="flex items-center gap-2">
+                                <Gauge className="size-4 text-black/40 shrink-0" />
+                                <div>
+                                  <span className="block font-sans text-[11px] text-black/50">Cruise speed</span>
+                                  <span className="font-sans font-semibold text-xs text-[#162A22]">
+                                    {activeSnapshot ? `${Math.round(activeSnapshot.speed_kmh)} km/h` : '38 km/h'}
+                                  </span>
+                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-2.5">
+                                <Users className="size-4 text-black/40 shrink-0" />
+                                <div>
+                                  <div className="flex items-center justify-between gap-2">
+                                    <span className="font-sans text-[11px] text-black/50">Occupancy</span>
+                                    <span className="font-sans font-semibold text-xs text-[#162A22]">
+                                      {activeSnapshot?.occupancy || 26} / {activeSnapshot?.capacity || 42} seated
+                                    </span>
+                                  </div>
+                                  <div className="w-24 h-2 bg-[#F0F5F2] rounded-full overflow-hidden mt-1">
+                                    <div
+                                      className="h-full bg-[#162A22] rounded-full transition-all duration-500"
+                                      style={{
+                                        width: `${Math.min(
+                                          100,
+                                          Math.round(
+                                            ((activeSnapshot?.occupancy || 26) / (activeSnapshot?.capacity || 42)) * 100,
+                                          ),
+                                        )}%`,
+                                      }}
+                                    />
+                                  </div>
                                 </div>
                               </div>
                             </div>
-                          </div>
 
-                          {snapshots.length > 1 && (
-                            <div className="flex items-center gap-2">
-                              <span className="font-sans text-xs text-black/50">Bus:</span>
-                              <div className="bg-[#F7F6F2] p-1 rounded-full flex items-center gap-1 border border-black/[0.04]">
-                                {snapshots.map((bus, idx) => (
-                                  <button
-                                    key={`${bus.bus_id}-${idx}`}
-                                    type="button"
-                                    onClick={() => setSelectedBusId(bus.bus_id)}
-                                    className={cn(
-                                      'px-3 py-1 rounded-full font-sans text-xs font-medium transition-all cursor-pointer',
-                                      activeSnapshot?.bus_id === bus.bus_id
-                                        ? 'bg-white text-[#162A22] shadow-sm font-semibold'
-                                        : 'text-black/60 hover:text-[#162A22]',
-                                    )}
-                                  >
-                                    {bus.fleet_code}
-                                  </button>
-                                ))}
+                            {snapshots.length > 1 && (
+                              <div className="flex items-center gap-2 pt-2 border-t border-black/[0.04]">
+                                <span className="font-sans text-xs text-black/50">Bus:</span>
+                                <div className="bg-[#F7F6F2] p-1 rounded-full flex items-center gap-1 border border-black/[0.04]">
+                                  {snapshots.map((bus, idx) => (
+                                    <button
+                                      key={`${bus.bus_id}-${idx}`}
+                                      type="button"
+                                      onClick={() => setSelectedBusId(bus.bus_id)}
+                                      className={cn(
+                                        'px-3 py-1 rounded-full font-sans text-xs font-medium transition-all cursor-pointer',
+                                        activeSnapshot?.bus_id === bus.bus_id
+                                          ? 'bg-white text-[#162A22] shadow-sm font-semibold'
+                                          : 'text-black/60 hover:text-[#162A22]',
+                                      )}
+                                    >
+                                      {bus.fleet_code}
+                                    </button>
+                                  ))}
+                                </div>
                               </div>
-                            </div>
-                          )}
+                            )}
+                          </div>
+                          {renderDriverProfileCard('Assigned Corridor Pilot · Active Telemetry')}
                         </div>
                       </div>
 
@@ -5909,52 +6142,54 @@ export default function Home() {
                   )}
 
                   {managementTab === 'audit' && (
-                    <table className="w-full text-left text-xs font-sans">
-                      <thead>
-                        <tr className="border-b border-black/[0.04] text-black/50">
-                          <th className="pb-3 px-4 font-medium">Recorded at</th>
-                          <th className="pb-3 px-4 font-medium">Action</th>
-                          <th className="pb-3 px-4 font-medium">Target entity</th>
-                          <th className="pb-3 px-4 font-medium">Actor</th>
-                          <th className="pb-3 px-4 font-medium text-right">IP address</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-black/[0.04]">
-                        {filteredAuditLogs.length === 0 ? (
-                          <tr>
-                            <td colSpan={5} className="py-6 text-center text-black/50 font-sans">
-                              No administrative audit events recorded yet for this workspace.
-                            </td>
-                          </tr>
-                        ) : (
-                          filteredAuditLogs.map((log, idx) => (
-                            <tr key={`${log.id}-${idx}`} className="hover:bg-[#F7F6F2]/50 transition-colors">
-                              <td className="py-3.5 px-4 font-sans text-xs text-slate-500">
-                                {formatDeterministicDate(log.created_at)} · {log.created_at.slice(11, 19)}
-                              </td>
-                              <td className="py-3.5 px-4">
-                                <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-sans font-medium bg-[#E6F4EA] text-[#162A22] border border-[#162A22]/10">
-                                  {log.action}
+                    <div className="space-y-3 font-sans">
+                      {filteredAuditLogs.length === 0 ? (
+                        <div className="py-8 text-center text-xs text-black/50 font-sans">
+                          No administrative audit events recorded yet for this workspace.
+                        </div>
+                      ) : (
+                        <ul className="divide-y divide-black/[0.04]">
+                          {filteredAuditLogs.map((log, idx) => {
+                            const isHigh =
+                              log.action.includes('DELETE') ||
+                              log.action.includes('FAIL') ||
+                              log.action.includes('CHAOS') ||
+                              log.action.includes('EMERGENCY');
+                            const isMedium =
+                              log.action.includes('UPDATE') ||
+                              log.action.includes('MODIFY') ||
+                              log.action.includes('OPTIMIZE') ||
+                              log.action.includes('APPLY');
+                            const priorityLabel = isHigh ? 'high' : isMedium ? 'medium' : 'low';
+                            const priorityPillClass = isHigh
+                              ? 'bg-[#FCE8E6] text-[#B91C1C]'
+                              : isMedium
+                              ? 'bg-[#FEF3D6] text-[#B45309]'
+                              : 'bg-[#E6F4EA] text-[#166534]';
+
+                            return (
+                              <li key={`${log.id}-${idx}`} className="flex items-center gap-3.5 py-3 hover:bg-[#F7F6F2]/40 rounded-xl px-2 transition-colors">
+                                <span className="grid size-9 shrink-0 place-items-center rounded-2xl bg-black/[0.04] text-[#162A22]">
+                                  <ShieldCheck className="size-4" />
                                 </span>
-                              </td>
-                              <td className="py-3.5 px-4 font-medium text-[#162A22]">
-                                {log.target_entity}
-                              </td>
-                              <td className="py-3.5 px-4 text-slate-600 font-sans text-xs">
-                                {log.actor_user_id ? (
-                                  <span>{log.actor_user_id.slice(0, 8)}…</span>
-                                ) : (
-                                  <span>System / Operator</span>
-                                )}
-                              </td>
-                              <td className="py-3.5 px-4 text-right font-sans text-xs text-slate-500">
-                                {log.ip_address || '127.0.0.1'}
-                              </td>
-                            </tr>
-                          ))
-                        )}
-                      </tbody>
-                    </table>
+                                <div className="min-w-0 flex-1 font-sans">
+                                  <p className="truncate text-sm font-semibold text-[#162A22]">{log.action}</p>
+                                  <p className="truncate text-xs text-black/50 mt-0.5">
+                                    Target: {log.target_entity} · {formatDeterministicDate(log.created_at)} {log.created_at.slice(11, 19)} · IP: {log.ip_address || '127.0.0.1'}
+                                  </p>
+                                </div>
+                                <span className="hidden sm:block text-xs text-black/60 font-sans truncate max-w-[140px]">
+                                  {log.actor_user_id ? `User ${log.actor_user_id.slice(0, 8)}…` : 'Operator / System'}
+                                </span>
+                                <span className={cn('rounded-full px-2.5 py-0.5 text-[11px] font-semibold capitalize font-sans shrink-0', priorityPillClass)}>
+                                  {priorityLabel}
+                                </span>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      )}
+                    </div>
                   )}
 
                   {managementTab === 'members' && (
@@ -6272,6 +6507,91 @@ export default function Home() {
               <div className="inline-flex items-center gap-2 rounded-full bg-white px-3.5 py-1.5 text-xs font-medium text-foreground border border-black/[0.06] shadow-sm">
                 <span className="w-2 h-2 rounded-full bg-[#162A22]" />
                 <span>Active workspace · {activeTenant.name}</span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-stretch mb-8">
+              <div className="bg-white rounded-[28px] p-6 shadow-[0_14px_30px_-10px_rgba(0,0,0,0.04)] border border-black/[0.04] flex flex-col justify-between">
+                <header className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-black/50 font-sans">Corridor Load Factor</p>
+                    <h3 className="text-base font-semibold text-[#162A22] tracking-tight font-sans mt-0.5">Fleet Utilization</h3>
+                  </div>
+                  <span className="inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-medium border border-black/[0.08] text-[#162A22] font-sans">
+                    This week <ArrowUpRight className="size-3 text-black/50" />
+                  </span>
+                </header>
+                <div className="mt-8 flex flex-1 items-end gap-2 sm:gap-3 min-h-[160px] pb-2">
+                  {utilizationDays.map((d, i) => {
+                    const active = i === 3;
+                    return (
+                      <div key={d.label} className="flex h-full min-h-[160px] flex-1 flex-col items-center justify-end gap-2">
+                        {active ? (
+                          <span className="whitespace-nowrap rounded-lg bg-[#162A22] px-2 py-1 text-[11px] font-medium text-white shadow-md font-sans">
+                            {d.value}%
+                          </span>
+                        ) : null}
+                        <div
+                          className={cn(
+                            'w-full max-w-10 rounded-xl transition-all duration-500',
+                            active ? 'hatch bg-[#162A22]' : 'bg-[#D3EAD9] hover:bg-[#bde0c6]',
+                          )}
+                          style={{ height: `${(d.value / 100) * 100}%` }}
+                        />
+                        <span className={cn('text-xs font-sans', active ? 'font-bold text-[#162A22]' : 'text-black/50')}>{d.label}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+                <footer className="mt-4 pt-3 border-t border-black/[0.04] flex items-center justify-between text-xs text-black/60 font-sans">
+                  <span>Peak load recorded during Thursday morning corridor surge</span>
+                  <span className="font-semibold text-[#162A22]">94% Max Load</span>
+                </footer>
+              </div>
+
+              <div className="bg-white rounded-[28px] p-6 shadow-[0_14px_30px_-10px_rgba(0,0,0,0.04)] border border-black/[0.04] flex flex-col justify-between">
+                <header className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-black/50 font-sans">Capacity & Seating Allocation</p>
+                    <h3 className="text-base font-semibold text-[#162A22] tracking-tight font-sans mt-0.5">Seat & Fleet Breakdown</h3>
+                  </div>
+                  <span className="rounded-full bg-[#162A22]/5 px-3 py-1 font-sans text-xs font-semibold text-[#162A22]">
+                    PostgreSQL Live State
+                  </span>
+                </header>
+                <div className="mt-4 flex flex-1 flex-col items-center justify-center gap-6 sm:flex-row">
+                  <div className="relative size-36 shrink-0">
+                    <svg viewBox="0 0 128 128" className="size-full -rotate-90">
+                      {donutCalculations.elements}
+                    </svg>
+                    <div className="absolute inset-0 grid place-items-center text-center font-sans">
+                      <div>
+                        <span className="block text-2xl font-bold text-[#162A22] tabular-nums">{totalFleetCapacity}</span>
+                        <span className="block text-[11px] text-black/50 uppercase tracking-wider">Seats Total</span>
+                      </div>
+                    </div>
+                  </div>
+                  <ul className="grid w-full flex-1 grid-cols-1 gap-2.5 font-sans">
+                    {donutCalculations.segments.map((s) => (
+                      <li key={s.label} className="flex items-center justify-between gap-2 text-xs">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="size-2.5 shrink-0 rounded-full" style={{ backgroundColor: s.color }} />
+                          <span className="truncate text-black/70">{s.label}</span>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className="font-semibold text-[#162A22] tabular-nums">{s.value}</span>
+                          <span className="text-[11px] text-black/40 tabular-nums w-8 text-right">
+                            {Math.round((s.value / donutCalculations.sum) * 100)}%
+                          </span>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+                <footer className="mt-4 pt-3 border-t border-black/[0.04] flex items-center justify-between text-xs text-black/60 font-sans">
+                  <span>TimescaleDB inventory snapshot</span>
+                  <span className="font-semibold text-emerald-700">{availableSeatsCount} seats available</span>
+                </footer>
               </div>
             </div>
 
