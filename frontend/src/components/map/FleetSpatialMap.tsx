@@ -14,7 +14,9 @@ import {
   useMapEvents,
 } from 'react-leaflet';
 import { BusSnapshot, Route as RouteEntity, Stop, StopETA } from '@/lib/api';
-import { LatLngTuple, StudioStop } from './types';
+import { LatLngTuple, StudioStop, isValidLatLng } from './types';
+
+export { isValidLatLng };
 
 const BUS_SVG =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 6v6"/><path d="M15 6v6"/><path d="M2 12h19.6"/><path d="M18 18h3s.5-1.7.8-2.8c.1-.4.2-.8.2-1.2 0-.4-.1-.8-.2-1.2l-1.4-5C20.1 6.8 19.1 6 18 6H4a2 2 0 0 0-2 2v10h3"/><circle cx="7" cy="18" r="2"/><path d="M9 18h5"/><circle cx="16" cy="18" r="2"/></svg>';
@@ -34,9 +36,12 @@ const TENANT_CENTERS: Record<string, LatLngTuple> = {
 };
 
 function getSplinePoints(points: LatLngTuple[], numSegments: number = 8): LatLngTuple[] {
-  if (points.length < 3) return points;
+  const validPoints = (points || []).filter(
+    (p) => Array.isArray(p) && p.length >= 2 && isValidLatLng(p[0], p[1]),
+  );
+  if (validPoints.length < 3) return validPoints;
   const result: LatLngTuple[] = [];
-  const pts: LatLngTuple[] = [points[0], ...points, points[points.length - 1]];
+  const pts: LatLngTuple[] = [validPoints[0], ...validPoints, validPoints[validPoints.length - 1]];
   for (let i = 1; i < pts.length - 2; i++) {
     const p0 = pts[i - 1];
     const p1 = pts[i];
@@ -58,10 +63,15 @@ function getSplinePoints(points: LatLngTuple[], numSegments: number = 8): LatLng
           (-p0[1] + p2[1]) * t +
           (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2 +
           (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3);
-      result.push([lat, lng]);
+      if (isValidLatLng(lat, lng)) {
+        result.push([lat, lng]);
+      }
     }
   }
-  result.push(points[points.length - 1]);
+  const last = validPoints[validPoints.length - 1];
+  if (isValidLatLng(last[0], last[1])) {
+    result.push(last);
+  }
   return result;
 }
 
@@ -194,11 +204,12 @@ export default function FleetSpatialMap({
   }, [safeSnapshots, selectedBusId]);
 
   const defaultCenter = useMemo<LatLngTuple>(() => {
-    if (TENANT_CENTERS[tenantId]) {
+    if (TENANT_CENTERS[tenantId] && isValidLatLng(TENANT_CENTERS[tenantId][0], TENANT_CENTERS[tenantId][1])) {
       return TENANT_CENTERS[tenantId];
     }
-    if (safeStops.length > 0 && typeof safeStops[0].latitude === 'number' && typeof safeStops[0].longitude === 'number') {
-      return [safeStops[0].latitude, safeStops[0].longitude];
+    const firstValidStop = safeStops.find((s) => s && isValidLatLng(s.latitude, s.longitude));
+    if (firstValidStop) {
+      return [firstValidStop.latitude, firstValidStop.longitude];
     }
     return [3.1209, 101.6538];
   }, [tenantId, safeStops]);
@@ -206,7 +217,7 @@ export default function FleetSpatialMap({
   const multiRoutePaths = useMemo<MultiRoutePath[]>(() => {
     if (safeRoutes.length === 0) {
       const pts = safeStops
-        .filter((s) => s && typeof s.latitude === 'number' && typeof s.longitude === 'number')
+        .filter((s) => s && isValidLatLng(s.latitude, s.longitude))
         .map((s) => [s.latitude, s.longitude] as LatLngTuple);
       return [
         {
@@ -226,7 +237,7 @@ export default function FleetSpatialMap({
           ringColor: ROUTE_RING_PALETTE[0],
           rawPoints: pts,
           splinePoints: getSplinePoints(pts),
-          stops: safeStops,
+          stops: safeStops.filter((s) => s && isValidLatLng(s.latitude, s.longitude)),
           isActive: true,
         },
       ];
@@ -245,9 +256,9 @@ export default function FleetSpatialMap({
           if (!seenStopIds.has(eta.stop_id)) {
             seenStopIds.add(eta.stop_id);
             const found = safeStops.find((s) => s.id === eta.stop_id);
-            if (found) {
+            if (found && isValidLatLng(found.latitude, found.longitude)) {
               orderedStopsForRoute.push(found);
-            } else {
+            } else if (isValidLatLng(eta.stop_latitude, eta.stop_longitude)) {
               orderedStopsForRoute.push({
                 id: eta.stop_id,
                 tenant_id: tenantId,
@@ -263,12 +274,13 @@ export default function FleetSpatialMap({
       }
 
       if (orderedStopsForRoute.length === 0) {
-        const stopsPerRoute = Math.max(1, Math.floor(safeStops.length / safeRoutes.length));
-        orderedStopsForRoute = safeStops.slice(idx * stopsPerRoute, (idx + 1) * stopsPerRoute);
+        const validStops = safeStops.filter((s) => s && isValidLatLng(s.latitude, s.longitude));
+        const stopsPerRoute = Math.max(1, Math.floor(validStops.length / safeRoutes.length));
+        orderedStopsForRoute = validStops.slice(idx * stopsPerRoute, (idx + 1) * stopsPerRoute);
       }
 
       const rawPoints = orderedStopsForRoute
-        .filter((s) => s && typeof s.latitude === 'number' && typeof s.longitude === 'number' && !isNaN(s.latitude) && !isNaN(s.longitude))
+        .filter((s) => s && isValidLatLng(s.latitude, s.longitude))
         .map((s) => [s.latitude, s.longitude] as LatLngTuple);
 
       const splinePoints = getSplinePoints(rawPoints);
@@ -295,27 +307,32 @@ export default function FleetSpatialMap({
   const activePathPoints = useMemo<LatLngTuple[]>(() => {
     if (selectedBusSnapshot && selectedBusSnapshot.route_id) {
       const p = multiRoutePaths.find((m) => m.route.id === selectedBusSnapshot.route_id);
-      if (p && p.rawPoints.length > 0) return p.rawPoints;
+      if (p && p.rawPoints.length > 0) {
+        const valid = p.rawPoints.filter((pt) => isValidLatLng(pt[0], pt[1]));
+        if (valid.length > 0) return valid;
+      }
     }
     if (selectedRouteId !== 'all') {
       const p = multiRoutePaths.find((m) => m.route.id === selectedRouteId);
-      if (p && p.rawPoints.length > 0) return p.rawPoints;
+      if (p && p.rawPoints.length > 0) {
+        const valid = p.rawPoints.filter((pt) => isValidLatLng(pt[0], pt[1]));
+        if (valid.length > 0) return valid;
+      }
     }
     const allPts: LatLngTuple[] = [];
     multiRoutePaths.forEach((m) => {
-      allPts.push(...(m.rawPoints || []));
+      const valid = (m.rawPoints || []).filter((pt) => isValidLatLng(pt[0], pt[1]));
+      allPts.push(...valid);
     });
-    return allPts.length > 0
-      ? allPts
-      : safeStops
-          .filter((s) => s && typeof s.latitude === 'number' && typeof s.longitude === 'number')
-          .map((s) => [s.latitude, s.longitude] as LatLngTuple);
+    if (allPts.length > 0) return allPts;
+    return safeStops
+      .filter((s) => s && isValidLatLng(s.latitude, s.longitude))
+      .map((s) => [s.latitude, s.longitude] as LatLngTuple);
   }, [multiRoutePaths, selectedRouteId, safeStops, selectedBusSnapshot]);
 
   const clusteredBuses = useMemo<ClusteredBusNode[]>(() => {
     const rawVisible = safeSnapshots.filter((b) => {
-      if (!b || typeof b.latitude !== 'number' || typeof b.longitude !== 'number') return false;
-      if (isNaN(b.latitude) || isNaN(b.longitude)) return false;
+      if (!b || !isValidLatLng(b.latitude, b.longitude)) return false;
       if (selectedBusId) return b.bus_id === selectedBusId;
       if (!selectedRouteId || selectedRouteId === 'all') return true;
       return b.route_id === selectedRouteId;
@@ -390,6 +407,7 @@ export default function FleetSpatialMap({
           const angle = (idx * 2 * Math.PI) / size;
           const displayLat = centerLat + Math.cos(angle) * radius;
           const displayLng = centerLng + Math.sin(angle) * radius;
+          const validDisplay = isValidLatLng(displayLat, displayLng);
           const routeIdx = safeRoutes.findIndex((r) => r.id === bus.route_id);
           const color = routeIdx >= 0 ? ROUTE_PALETTE[routeIdx % ROUTE_PALETTE.length] : '#162A22';
 
@@ -397,8 +415,8 @@ export default function FleetSpatialMap({
             bus,
             realLat: bus.latitude,
             realLng: bus.longitude,
-            displayLat,
-            displayLng,
+            displayLat: validDisplay ? displayLat : bus.latitude,
+            displayLng: validDisplay ? displayLng : bus.longitude,
             isOffset: true,
             labelPositionClass: labelClasses[idx % labelClasses.length],
             clusterIndex: idx,
@@ -414,7 +432,9 @@ export default function FleetSpatialMap({
 
   const studioSplinePoints = useMemo<LatLngTuple[]>(() => {
     if (!studioStops || studioStops.length < 2) return [];
-    const raw = studioStops.map((s) => [s.latitude, s.longitude] as LatLngTuple);
+    const raw = studioStops
+      .filter((s) => s && isValidLatLng(s.latitude, s.longitude))
+      .map((s) => [s.latitude, s.longitude] as LatLngTuple);
     return getSplinePoints(raw);
   }, [studioStops]);
 
@@ -460,11 +480,14 @@ export default function FleetSpatialMap({
 
         {showRoutes &&
           (multiRoutePaths || []).map((rp) => {
-            if (!rp.isActive || !rp.splinePoints || rp.splinePoints.length < 2) return null;
+            const validSpline = (rp.splinePoints || []).filter(
+              (p) => Array.isArray(p) && p.length >= 2 && isValidLatLng(p[0], p[1]),
+            );
+            if (!rp.isActive || validSpline.length < 2) return null;
             return (
               <Polyline
                 key={`route-polyline-${rp.route.id}`}
-                positions={rp.splinePoints}
+                positions={validSpline}
                 pathOptions={{
                   color: rp.color,
                   weight: rp.isActive ? 4.5 : 2,
@@ -479,10 +502,10 @@ export default function FleetSpatialMap({
 
         {showRoutes &&
           (snapshots || [])
-            .filter((b) => b && (b.route_variant === 'ALTERNATE_ROUTE_2' || b.is_detour))
+            .filter((b) => b && (b.route_variant === 'ALTERNATE_ROUTE_2' || b.is_detour) && isValidLatLng(b.latitude, b.longitude))
             .map((bus) => {
               const matchedRoute = multiRoutePaths.find((r) => r.route.id === bus.route_id) || multiRoutePaths[0];
-              const routeStops = matchedRoute?.stops || [];
+              const routeStops = (matchedRoute?.stops || []).filter((s) => s && isValidLatLng(s.latitude, s.longitude));
               const alternatePoints: LatLngTuple[] = [];
               if (routeStops.length >= 2) {
                 for (let i = 0; i < routeStops.length - 1; i++) {
@@ -496,26 +519,31 @@ export default function FleetSpatialMap({
                     const uLat = -dLng / len;
                     const uLng = dLat / len;
                     const offset = 0.0035;
-                    alternatePoints.push([
-                      (s1.latitude + s2.latitude) / 2 + uLat * offset,
-                      (s1.longitude + s2.longitude) / 2 + uLng * offset,
-                    ]);
+                    const midLat = (s1.latitude + s2.latitude) / 2 + uLat * offset;
+                    const midLng = (s1.longitude + s2.longitude) / 2 + uLng * offset;
+                    if (isValidLatLng(midLat, midLng)) {
+                      alternatePoints.push([midLat, midLng]);
+                    }
                   }
                 }
                 const lastStop = routeStops[routeStops.length - 1];
                 alternatePoints.push([lastStop.latitude, lastStop.longitude]);
               }
+              const validBusCoords = isValidLatLng(bus.latitude, bus.longitude);
+              const fallbackPoints: LatLngTuple[] = validBusCoords
+                ? [
+                    [bus.latitude, bus.longitude],
+                    [bus.latitude + 0.003, bus.longitude + 0.003],
+                  ]
+                : [];
               const alternateSpline = getSplinePoints(
-                alternatePoints.length > 2
-                  ? alternatePoints
-                  : [
-                      [bus.latitude, bus.longitude],
-                      [bus.latitude + 0.003, bus.longitude + 0.003],
-                    ],
+                alternatePoints.length > 2 ? alternatePoints : fallbackPoints,
               );
+              if (alternateSpline.length < 2) return null;
               const delayDisplay = (bus.delay_minutes ?? ((bus.detour_delay_sec || 210) / 60)).toFixed(1);
               const midWaypoint =
-                alternateSpline[Math.floor(alternateSpline.length / 2)] || [bus.latitude, bus.longitude];
+                alternateSpline[Math.floor(alternateSpline.length / 2)] || (validBusCoords ? [bus.latitude, bus.longitude] : null);
+              if (!midWaypoint || !isValidLatLng(midWaypoint[0], midWaypoint[1])) return null;
 
               return (
                 <React.Fragment key={`bus-route2-${bus.bus_id}`}>
@@ -556,6 +584,7 @@ export default function FleetSpatialMap({
           (multiRoutePaths || []).map((rp) => {
             if (!rp.isActive) return null;
             return (rp.stops || []).map((stop, sIdx) => {
+              if (!stop || !isValidLatLng(stop.latitude, stop.longitude)) return null;
               const isStopActive = activeSnapshot?.current_stop_sequence === sIdx + 1;
               const stopEta = safeEtas.find(
                 (e) => e.stop_id === stop.id && (selectedRouteId === 'all' || e.route_id === selectedRouteId),
@@ -607,6 +636,7 @@ export default function FleetSpatialMap({
 
         {studioMode &&
           studioStops.map((st, idx) => {
+            if (!st || !isValidLatLng(st.latitude, st.longitude)) return null;
             const isOrigin = idx === 0;
             const isDest = idx === studioStops.length - 1 && studioStops.length > 1;
             const pinColor = isOrigin ? '#059669' : isDest ? '#D97706' : '#4F46E5';
@@ -641,6 +671,7 @@ export default function FleetSpatialMap({
 
         {clusteredBuses.map((node) => {
           if (!node.isOffset) return null;
+          if (!isValidLatLng(node.realLat, node.realLng) || !isValidLatLng(node.displayLat, node.displayLng)) return null;
           return (
             <React.Fragment key={`connector-${node.bus.bus_id}`}>
               <Polyline
@@ -713,19 +744,22 @@ interface BusMarkerNodeProps {
 
 function BusMarkerNode({ node, selected, onSelect }: BusMarkerNodeProps) {
   const { bus, displayLat, displayLng, labelPositionClass, routeColor } = node;
+  const isValidPos = isValidLatLng(displayLat, displayLng);
   const markerRef = React.useRef<L.Marker | null>(null);
-  const currentPos = React.useRef<[number, number]>([displayLat, displayLng]);
-  const prevPos = React.useRef<[number, number]>([displayLat, displayLng]);
-  const targetPos = React.useRef<[number, number]>([displayLat, displayLng]);
+  const currentPos = React.useRef<[number, number]>(isValidPos ? [displayLat, displayLng] : [3.1209, 101.6538]);
+  const prevPos = React.useRef<[number, number]>(isValidPos ? [displayLat, displayLng] : [3.1209, 101.6538]);
+  const targetPos = React.useRef<[number, number]>(isValidPos ? [displayLat, displayLng] : [3.1209, 101.6538]);
   const startTime = React.useRef<number>(performance.now());
 
   React.useEffect(() => {
+    if (!isValidLatLng(displayLat, displayLng)) return;
     prevPos.current = currentPos.current;
     targetPos.current = [displayLat, displayLng];
     startTime.current = performance.now();
   }, [displayLat, displayLng]);
 
   React.useEffect(() => {
+    if (!isValidLatLng(displayLat, displayLng)) return;
     let animId: number;
     const animate = () => {
       const now = performance.now();
@@ -733,9 +767,11 @@ function BusMarkerNode({ node, selected, onSelect }: BusMarkerNodeProps) {
       const t = Math.min(1.0, Math.max(0.0, elapsed / 1800));
       const lat = prevPos.current[0] + (targetPos.current[0] - prevPos.current[0]) * t;
       const lng = prevPos.current[1] + (targetPos.current[1] - prevPos.current[1]) * t;
-      currentPos.current = [lat, lng];
-      if (markerRef.current) {
-        markerRef.current.setLatLng([lat, lng]);
+      if (isValidLatLng(lat, lng)) {
+        currentPos.current = [lat, lng];
+        if (markerRef.current) {
+          markerRef.current.setLatLng([lat, lng]);
+        }
       }
       if (t < 1.0) {
         animId = requestAnimationFrame(animate);
@@ -744,6 +780,8 @@ function BusMarkerNode({ node, selected, onSelect }: BusMarkerNodeProps) {
     animId = requestAnimationFrame(animate);
     return () => cancelAnimationFrame(animId);
   }, [displayLat, displayLng]);
+
+  if (!isValidPos) return null;
 
   const isCompleted =
     bus.bus_status === 'COMPLETED' || bus.trip_status === 'JOURNEY_ENDED';
@@ -830,19 +868,53 @@ function FocusController({
     map.invalidateSize();
     if (routePath && routePath.length > 0) {
       const validPoints = routePath.filter(
-        (p) => Array.isArray(p) && typeof p[0] === 'number' && typeof p[1] === 'number' && !isNaN(p[0]) && !isNaN(p[1]),
+        (p) => Array.isArray(p) && p.length >= 2 && isValidLatLng(p[0], p[1]),
       );
-      if (validPoints.length > 0) {
-        const bounds = L.latLngBounds(validPoints).pad(0.18);
-        map.flyToBounds(bounds, {
-          duration: 0.8,
-          maxZoom: 16,
-        });
+      if (validPoints.length === 1) {
+        map.setView([validPoints[0][0], validPoints[0][1]], 15, { animate: true });
         return;
+      }
+      if (validPoints.length > 1) {
+        try {
+          const latLngs = validPoints.map((p) => L.latLng(p[0], p[1]));
+          const bounds = L.latLngBounds(latLngs);
+          if (bounds.isValid()) {
+            const sw = bounds.getSouthWest();
+            const ne = bounds.getNorthEast();
+            if (isValidLatLng(sw.lat, sw.lng) && isValidLatLng(ne.lat, ne.lng)) {
+              if (Math.abs(sw.lat - ne.lat) < 0.00001 && Math.abs(sw.lng - ne.lng) < 0.00001) {
+                map.setView([sw.lat, sw.lng], 15, { animate: true });
+                return;
+              }
+              const padded = bounds.pad(0.18);
+              if (padded.isValid()) {
+                const psw = padded.getSouthWest();
+                const pne = padded.getNorthEast();
+                if (isValidLatLng(psw.lat, psw.lng) && isValidLatLng(pne.lat, pne.lng)) {
+                  map.flyToBounds(padded, {
+                    duration: 0.8,
+                    maxZoom: 16,
+                  });
+                  return;
+                }
+              }
+              map.flyToBounds(bounds, {
+                duration: 0.8,
+                maxZoom: 16,
+              });
+              return;
+            }
+          }
+        } catch {
+          if (validPoints.length > 0) {
+            map.setView([validPoints[0][0], validPoints[0][1]], 15, { animate: true });
+            return;
+          }
+        }
       }
     }
 
-    if (center && typeof center[0] === 'number' && typeof center[1] === 'number' && !isNaN(center[0]) && !isNaN(center[1])) {
+    if (Array.isArray(center) && center.length >= 2 && isValidLatLng(center[0], center[1])) {
       map.setView(center, 14, { animate: true });
     }
   }, [focusKey, map, center, routePath]);

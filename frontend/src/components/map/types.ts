@@ -3,6 +3,18 @@ import { UserRole } from '@/lib/api';
 
 export type LatLngTuple = [number, number];
 
+export function isValidLatLng(lat: unknown, lng: unknown): boolean {
+  return (
+    typeof lat === 'number' &&
+    typeof lng === 'number' &&
+    Number.isFinite(lat) &&
+    Number.isFinite(lng) &&
+    Math.abs(lat) <= 90 &&
+    Math.abs(lng) <= 180 &&
+    !(lat === 0 && lng === 0)
+  );
+}
+
 export interface MapStopNode {
   id: string;
   name: string;

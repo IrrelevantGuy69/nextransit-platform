@@ -73,7 +73,7 @@ import {
   WebhookTestResponse,
   SeatWaitlist,
 } from '@/lib/api';
-import { StudioStop } from '@/components/map/types';
+import { StudioStop, isValidLatLng } from '@/components/map/types';
 import { cn } from '@/lib/utils';
 
 const LiveSpatialDashboard = dynamic(
@@ -3629,6 +3629,7 @@ export default function Home() {
   const uniqueStops = useMemo(() => {
     const seen = new Set<string>();
     return stops.filter((item) => {
+      if (!item || !isValidLatLng(item.latitude, item.longitude)) return false;
       if (seen.has(item.id)) return false;
       seen.add(item.id);
       return true;
@@ -4536,14 +4537,20 @@ export default function Home() {
   const handleAddStopSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newStopName || !newStopCode) return;
+    const lat = Number(newStopLat);
+    const lng = Number(newStopLng);
+    if (!isValidLatLng(lat, lng)) {
+      setNotification({ type: 'error', message: 'Invalid stop coordinates.' });
+      return;
+    }
 
     try {
       const created = await api.createStop({
         tenant_id: selectedTenantId,
         name: newStopName,
         code: newStopCode,
-        latitude: Number(newStopLat),
-        longitude: Number(newStopLng),
+        latitude: lat,
+        longitude: lng,
       });
       setStops((prev) => [created, ...prev]);
       setNewStopName('');
@@ -4556,8 +4563,8 @@ export default function Home() {
         tenant_id: selectedTenantId,
         name: newStopName,
         code: newStopCode,
-        latitude: Number(newStopLat),
-        longitude: Number(newStopLng),
+        latitude: lat,
+        longitude: lng,
         created_at: new Date().toISOString(),
       };
       setStops((prev) => [mockStop, ...prev]);
@@ -4615,6 +4622,7 @@ export default function Home() {
 
   const handleStudioMapClick = useCallback((lat: number, lng: number) => {
     if (!isRouteStudioOpen) return;
+    if (!isValidLatLng(lat, lng)) return;
     setStudioStops((prev) => {
       const count = prev.length + 1;
       const name = count === 1 ? 'Origin Station' : count === 2 ? 'Terminal Station' : `Waypoint Stop ${count}`;

@@ -2,7 +2,7 @@
 
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import dynamic from 'next/dynamic';
-import type { Map as LeafletMap } from 'leaflet';
+import L, { type Map as LeafletMap } from 'leaflet';
 import {
   Bus,
   CheckCircle2,
@@ -26,6 +26,7 @@ import { RoleFilter } from './RoleFilter';
 import { StatPills } from './StatPills';
 import { RoutePanel } from './RoutePanel';
 import { StatPillItem, TripStatusFilter, StudioStop } from './types';
+import { isValidLatLng } from './FleetSpatialMap';
 
 const FleetSpatialMap = dynamic(() => import('./FleetSpatialMap'), {
   ssr: false,
@@ -139,11 +140,40 @@ export function LiveSpatialDashboard({
   const handleRecenter = useCallback(() => {
     setRecenterCount((c) => c + 1);
     if (mapInstance && safeStops.length > 0) {
-      const bounds = safeStops
-        .filter((s) => s && typeof s.latitude === 'number' && typeof s.longitude === 'number' && !isNaN(s.latitude) && !isNaN(s.longitude))
+      const validStops = safeStops
+        .filter((s) => s && isValidLatLng(s.latitude, s.longitude))
         .map((s) => [s.latitude, s.longitude] as [number, number]);
-      if (bounds.length > 0) {
-        mapInstance.flyToBounds(bounds, { padding: [40, 40], duration: 0.8 });
+      if (validStops.length === 1) {
+        mapInstance.setView(validStops[0], 15, { animate: true });
+      } else if (validStops.length > 1) {
+        try {
+          const latLngs = validStops.map((p) => L.latLng(p[0], p[1]));
+          const bounds = L.latLngBounds(latLngs);
+          if (bounds.isValid()) {
+            const sw = bounds.getSouthWest();
+            const ne = bounds.getNorthEast();
+            if (isValidLatLng(sw.lat, sw.lng) && isValidLatLng(ne.lat, ne.lng)) {
+              if (Math.abs(sw.lat - ne.lat) < 0.00001 && Math.abs(sw.lng - ne.lng) < 0.00001) {
+                mapInstance.setView([sw.lat, sw.lng], 15, { animate: true });
+                return;
+              }
+              const padded = bounds.pad(0.18);
+              if (padded.isValid()) {
+                const psw = padded.getSouthWest();
+                const pne = padded.getNorthEast();
+                if (isValidLatLng(psw.lat, psw.lng) && isValidLatLng(pne.lat, pne.lng)) {
+                  mapInstance.flyToBounds(padded, { padding: [40, 40], duration: 0.8, maxZoom: 16 });
+                  return;
+                }
+              }
+              mapInstance.flyToBounds(bounds, { padding: [40, 40], duration: 0.8, maxZoom: 16 });
+            }
+          }
+        } catch {
+          if (validStops.length > 0) {
+            mapInstance.setView(validStops[0], 15, { animate: true });
+          }
+        }
       }
     }
   }, [mapInstance, safeStops]);
@@ -170,7 +200,7 @@ export function LiveSpatialDashboard({
       for (let j = i + 1; j < filteredSnapshots.length; j++) {
         const b1 = filteredSnapshots[i];
         const b2 = filteredSnapshots[j];
-        if (b1 && b2 && typeof b1.latitude === 'number' && typeof b2.latitude === 'number') {
+        if (b1 && b2 && isValidLatLng(b1.latitude, b1.longitude) && isValidLatLng(b2.latitude, b2.longitude)) {
           const dist = Math.hypot(
             b1.latitude - b2.latitude,
             b1.longitude - b2.longitude,
