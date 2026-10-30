@@ -629,7 +629,7 @@ export default function FleetSpatialMap({
                   eventHandlers={{
                     click: () => {
                       if (mapRef.current) {
-                        mapRef.current.flyTo([stop.latitude, stop.longitude], 16, { duration: 0.8 });
+                        mapRef.current.setView([stop.latitude, stop.longitude], 16, { animate: false });
                       }
                     },
                   }}
@@ -768,34 +768,90 @@ function FocusController({
   const map = useMap();
 
   useEffect(() => {
-    map.invalidateSize();
+    let allPoints: LatLngTuple[] = [];
 
     if (selectedRouteId !== 'all') {
       const match = routeGeometries.find((r) => r.route.id === selectedRouteId);
       if (match && match.primaryCoords.length > 0) {
-        const bounds = L.latLngBounds(match.primaryCoords.map((p) => L.latLng(p[0], p[1])));
-        if (bounds.isValid()) {
-          map.flyToBounds(bounds.pad(0.15), { duration: 0.8, maxZoom: 16 });
-          return;
-        }
+        allPoints = match.primaryCoords;
       }
     }
 
-    if (routeGeometries.length > 0) {
-      const allPoints: LatLngTuple[] = [];
+    if (allPoints.length === 0 && routeGeometries.length > 0) {
       routeGeometries.forEach((rg) => allPoints.push(...rg.primaryCoords));
-      if (allPoints.length > 0) {
-        const bounds = L.latLngBounds(allPoints.map((p) => L.latLng(p[0], p[1])));
-        if (bounds.isValid()) {
-          map.flyToBounds(bounds.pad(0.12), { duration: 0.8, maxZoom: 16 });
-          return;
-        }
-      }
     }
 
-    if (isValidLatLng(center[0], center[1])) {
-      map.setView(center, 14, { animate: true });
+    if (allPoints.length === 0 && isValidLatLng(center[0], center[1])) {
+      allPoints = [center];
     }
+
+    const rafId = window.requestAnimationFrame(() => {
+      try {
+        map.invalidateSize({ animate: false });
+        const size = map.getSize();
+        if (!size || !Number.isFinite(size.x) || !Number.isFinite(size.y) || size.x < 32 || size.y < 32) {
+          return;
+        }
+
+        const cleanPoints = allPoints.filter(
+          (p): p is [number, number] =>
+            Array.isArray(p) &&
+            p.length >= 2 &&
+            typeof p[0] === 'number' &&
+            typeof p[1] === 'number' &&
+            Number.isFinite(p[0]) &&
+            Number.isFinite(p[1]) &&
+            Math.abs(p[0]) < 85 &&
+            Math.abs(p[1]) <= 180 &&
+            !(p[0] === 0 && p[1] === 0),
+        );
+
+        if (cleanPoints.length === 0) {
+          return;
+        }
+
+        if (cleanPoints.length === 1) {
+          map.setView([cleanPoints[0][0], cleanPoints[0][1]], 15, { animate: false });
+          return;
+        }
+
+        let minLat = cleanPoints[0][0];
+        let maxLat = cleanPoints[0][0];
+        let minLng = cleanPoints[0][1];
+        let maxLng = cleanPoints[0][1];
+
+        for (const pt of cleanPoints) {
+          if (pt[0] < minLat) minLat = pt[0];
+          if (pt[0] > maxLat) maxLat = pt[0];
+          if (pt[1] < minLng) minLng = pt[1];
+          if (pt[1] > maxLng) maxLng = pt[1];
+        }
+
+        const latSpan = Math.abs(maxLat - minLat);
+        const lngSpan = Math.abs(maxLng - minLng);
+
+        if (latSpan < 0.0003 && lngSpan < 0.0003) {
+          map.setView([(minLat + maxLat) / 2, (minLng + maxLng) / 2], 15, { animate: false });
+          return;
+        }
+
+        const bounds = L.latLngBounds(
+          L.latLng(minLat, minLng),
+          L.latLng(maxLat, maxLng),
+        );
+
+        if (bounds.isValid()) {
+          map.fitBounds(bounds, {
+            padding: [40, 40],
+            maxZoom: 15,
+            animate: false,
+          });
+        }
+      } catch {
+        return;
+      }
+    });
+    return () => window.cancelAnimationFrame(rafId);
   }, [focusKey, map, center, selectedRouteId, routeGeometries]);
 
   return null;
