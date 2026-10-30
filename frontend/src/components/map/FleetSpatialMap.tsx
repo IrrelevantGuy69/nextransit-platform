@@ -504,6 +504,7 @@ export default function FleetSpatialMap({
           selectedBusId={selectedBusId}
           selectedRouteId={selectedRouteId}
           routeGeometries={routeGeometries}
+          snapshots={safeSnapshots}
         />
 
         {showRoutes &&
@@ -745,6 +746,7 @@ interface FocusControllerProps {
   selectedBusId: string | null;
   selectedRouteId: string;
   routeGeometries: RouteGeometryItem[];
+  snapshots?: BusSnapshot[];
 }
 
 function FocusController({
@@ -753,10 +755,25 @@ function FocusController({
   selectedBusId,
   selectedRouteId,
   routeGeometries,
+  snapshots = [],
 }: FocusControllerProps) {
   const map = useMap();
+  const lastFocusedKeyRef = useRef<string>('');
 
   useEffect(() => {
+    if (lastFocusedKeyRef.current === focusKey) {
+      return;
+    }
+
+    if (selectedBusId) {
+      const bus = snapshots.find((b) => b && b.bus_id === selectedBusId);
+      if (bus && isValidLatLng(bus.latitude, bus.longitude)) {
+        map.setView([bus.latitude, bus.longitude], 15, { animate: false });
+        lastFocusedKeyRef.current = focusKey;
+        return;
+      }
+    }
+
     let allPoints: LatLngTuple[] = [];
 
     if (selectedRouteId !== 'all') {
@@ -801,6 +818,7 @@ function FocusController({
 
         if (cleanPoints.length === 1) {
           map.setView([cleanPoints[0][0], cleanPoints[0][1]], 15, { animate: false });
+          lastFocusedKeyRef.current = focusKey;
           return;
         }
 
@@ -821,6 +839,7 @@ function FocusController({
 
         if (latSpan < 0.0003 && lngSpan < 0.0003) {
           map.setView([(minLat + maxLat) / 2, (minLng + maxLng) / 2], 15, { animate: false });
+          lastFocusedKeyRef.current = focusKey;
           return;
         }
 
@@ -835,13 +854,14 @@ function FocusController({
             maxZoom: 15,
             animate: false,
           });
+          lastFocusedKeyRef.current = focusKey;
         }
       } catch {
         return;
       }
     });
     return () => window.cancelAnimationFrame(rafId);
-  }, [focusKey, map, center, selectedRouteId, routeGeometries]);
+  }, [focusKey, map, center, selectedRouteId, routeGeometries, selectedBusId, snapshots]);
 
   return null;
 }

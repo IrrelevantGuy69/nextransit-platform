@@ -6289,20 +6289,6 @@ export default function Home() {
                     </div>
 
                     <div className="flex flex-wrap items-center gap-2.5">
-                      {uniqueRoutes.length > 1 && (
-                        <select
-                          value={activeRoute.id}
-                          onChange={(e) => setSelectedRouteId(e.target.value)}
-                          className="bg-white text-[#162A22] font-sans text-xs font-medium px-4 py-2 rounded-full shadow-sm border border-black/[0.06] outline-none cursor-pointer hover:bg-[#F0F5F2] transition-colors"
-                        >
-                          {uniqueRoutes.map((r, idx) => (
-                            <option key={`${r.id}-${idx}`} value={r.id}>
-                              {r.code} · {r.name}
-                            </option>
-                          ))}
-                        </select>
-                      )}
-
                       {activeSnapshot?.trip_status === 'JOURNEY_ENDED' && (
                         <button
                           type="button"
