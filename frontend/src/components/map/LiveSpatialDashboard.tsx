@@ -26,7 +26,7 @@ import { RoleFilter } from './RoleFilter';
 import { StatPills } from './StatPills';
 import { RoutePanel } from './RoutePanel';
 import { StatPillItem, TripStatusFilter, StudioStop } from './types';
-import { isValidLatLng } from './FleetSpatialMap';
+import { isValidLatLng, ROUTE_PALETTE } from './FleetSpatialMap';
 
 const FleetSpatialMap = dynamic(() => import('./FleetSpatialMap'), {
   ssr: false,
@@ -102,6 +102,7 @@ export function LiveSpatialDashboard({
   const [selectedRouteId, setSelectedRouteId] = useState<string>('all');
   const [recenterCount, setRecenterCount] = useState<number>(0);
   const [mapInstance, setMapInstance] = useState<LeafletMap | null>(null);
+  const [followBus, setFollowBus] = useState<boolean>(true);
 
   const currentRole = onRoleChange ? userRole : internalRole;
 
@@ -346,10 +347,12 @@ export function LiveSpatialDashboard({
           studioStops={studioStops}
           onMapClick={onMapClick}
           onRemoveStudioStop={onRemoveStudioStop}
+          followBus={followBus}
+          isSimulating={isSimulating}
         />
 
         {!isStudioActive && (
-          <div className="absolute top-4 left-4 lg:left-[388px] right-4 z-[500] pointer-events-auto flex flex-wrap items-center justify-between gap-2.5 bg-white/95 backdrop-blur-md px-4 py-2.5 rounded-2xl border border-black/10 shadow-lg font-sans">
+          <div className="absolute top-4 left-4 lg:left-[368px] right-4 z-[500] pointer-events-auto flex flex-wrap items-center justify-between gap-2.5 bg-white/95 backdrop-blur-md px-4 py-2 rounded-2xl border border-black/10 shadow-lg font-sans">
             <div className="flex flex-wrap items-center gap-2">
               <div className="flex items-center gap-1.5 text-xs font-semibold text-[#162A22]">
                 <span className="text-[11px] font-medium text-black/50">Corridor:</span>
@@ -364,9 +367,9 @@ export function LiveSpatialDashboard({
                       if (!busMatches) onSelectBus('');
                     }
                   }}
-                  className="bg-[#F7F6F2] hover:bg-[#EFECE6] border border-black/[0.08] text-[#162A22] text-xs font-medium rounded-xl px-2.5 py-1.5 outline-none cursor-pointer transition-colors"
+                  className="bg-[#F7F6F2] hover:bg-[#EFECE6] border border-black/[0.08] text-[#162A22] text-xs font-medium rounded-xl px-2.5 py-1 outline-none cursor-pointer transition-colors"
                 >
-                  <option value="all">All corridors ({safeRoutes.length || 3})</option>
+                  <option value="all">All corridors ({safeRoutes.length || 5})</option>
                   {safeRoutes.map((rt) => (
                     <option key={rt.id} value={rt.id}>
                       {rt.code} · {rt.name}
@@ -390,8 +393,21 @@ export function LiveSpatialDashboard({
                   All buses ({filteredSnapshots.length})
                 </button>
 
-                {filteredSnapshots.map((bus) => {
+                {filteredSnapshots.map((bus, bIdx) => {
                   const isSelected = bus.bus_id === selectedBusId;
+                  const routeIdx = safeRoutes.findIndex((r) => r.id === bus.route_id);
+                  const dotColor =
+                    routeIdx >= 0
+                      ? ROUTE_PALETTE[routeIdx % ROUTE_PALETTE.length]
+                      : ROUTE_PALETTE[bIdx % ROUTE_PALETTE.length];
+                  const hasDelay =
+                    (bus.delay_minutes !== undefined && bus.delay_minutes > 0) ||
+                    bus.route_variant === 'ALTERNATE_ROUTE_2' ||
+                    bus.is_detour;
+                  const delayText = bus.delay_minutes
+                    ? `+${bus.delay_minutes.toFixed(1)}m`
+                    : '+3.8m';
+
                   return (
                     <button
                       key={bus.bus_id}
@@ -404,23 +420,65 @@ export function LiveSpatialDashboard({
                       }`}
                     >
                       <span
-                        className={`w-1.5 h-1.5 rounded-full ${
-                          bus.speed_kmh < 15 ? 'bg-amber-400' : 'bg-emerald-500'
-                        }`}
+                        className="w-2 h-2 rounded-full shrink-0"
+                        style={{ backgroundColor: dotColor }}
                       />
                       <span>{bus.fleet_code}</span>
+                      {hasDelay && (
+                        <span
+                          className={`text-[10px] px-1.5 py-0.2 rounded font-bold ${
+                            isSelected
+                              ? 'bg-amber-400 text-black'
+                              : 'bg-amber-100 text-amber-800'
+                          }`}
+                        >
+                          {delayText}
+                        </span>
+                      )}
                     </button>
                   );
                 })}
               </div>
             </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setFollowBus((f) => !f)}
+                className={`px-2.5 py-1 rounded-xl text-xs font-medium transition-all cursor-pointer flex items-center gap-1.5 ${
+                  followBus
+                    ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                    : 'bg-[#F7F6F2] text-black/60 border border-black/[0.08]'
+                }`}
+                title="Toggle camera auto-follow on selected bus"
+              >
+                <span
+                  className={`w-1.5 h-1.5 rounded-full ${
+                    followBus ? 'bg-emerald-500' : 'bg-neutral-400'
+                  }`}
+                />
+                <span>Follow: {followBus ? 'ON' : 'OFF'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => onToggleSimulate && onToggleSimulate()}
+                className={`px-2.5 py-1 rounded-xl text-xs font-medium transition-all cursor-pointer flex items-center gap-1.5 ${
+                  isSimulating
+                    ? 'bg-emerald-50 text-emerald-900 border border-emerald-200'
+                    : 'bg-amber-50 text-amber-900 border border-amber-200'
+                }`}
+              >
+                <span
+                  className={`w-1.5 h-1.5 rounded-full ${
+                    isSimulating ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'
+                  }`}
+                />
+                <span>{isSimulating ? 'Live 60 FPS' : 'Paused ⏸'}</span>
+              </button>
+            </div>
           </div>
         )}
-
-        <LiveBadge
-          paused={!isSimulating}
-          onToggle={() => onToggleSimulate && onToggleSimulate()}
-        />
 
         <MapControls
           showRoutes={showRoutes}
@@ -447,6 +505,11 @@ export function LiveSpatialDashboard({
               onRouteChange={setSelectedRouteId}
               stopETAs={safeEtas}
               transitEvents={safeEvents}
+              onSelectStop={(lat: number, lng: number) => {
+                if (mapInstance) {
+                  mapInstance.flyTo([lat, lng], 16, { duration: 0.8 });
+                }
+              }}
             />
           </div>
         )}

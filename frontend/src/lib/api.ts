@@ -103,6 +103,8 @@ export interface Route {
   distance_km: number;
   estimated_minutes: number;
   active: boolean;
+  primary_polyline?: [number, number][];
+  alternate_polyline?: [number, number][];
   created_at: string;
 }
 
@@ -116,6 +118,9 @@ export interface BusTelemetry {
   speed_kmh: number;
   heading_deg: number;
   occupancy: number;
+  trip_status?: string;
+  progress_pct?: number;
+  route_progress?: number;
 }
 
 export interface BusSnapshot {
@@ -130,6 +135,7 @@ export interface BusSnapshot {
   trip_status?: 'IN_TRANSIT' | 'AT_STOP' | 'JOURNEY_ENDED' | string;
   current_stop_sequence?: number;
   progress_pct?: number;
+  route_progress?: number;
   trip_ended_at?: string;
   route_id?: string;
   route_code: string;
@@ -154,6 +160,8 @@ export interface BusSnapshot {
   delay_minutes?: number;
   dwell_seconds?: number;
   segment_progress?: number;
+  primary_polyline?: [number, number][];
+  alternate_polyline?: [number, number][];
 }
 
 export interface IngestTelemetryRequest {

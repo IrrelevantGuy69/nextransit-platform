@@ -386,16 +386,18 @@ type CreateStopRequest struct {
 }
 
 type Route struct {
-	ID               string    `json:"id"`
-	TenantID         string    `json:"tenant_id"`
-	Name             string    `json:"name"`
-	Code             string    `json:"code"`
-	Origin           string    `json:"origin"`
-	Destination      string    `json:"destination"`
-	DistanceKm       float64   `json:"distance_km"`
-	EstimatedMinutes int       `json:"estimated_minutes"`
-	Active           bool      `json:"active"`
-	CreatedAt        time.Time `json:"created_at"`
+	ID                string        `json:"id"`
+	TenantID          string        `json:"tenant_id"`
+	Name              string        `json:"name"`
+	Code              string        `json:"code"`
+	Origin            string        `json:"origin"`
+	Destination       string        `json:"destination"`
+	DistanceKm        float64       `json:"distance_km"`
+	EstimatedMinutes  int           `json:"estimated_minutes"`
+	Active            bool          `json:"active"`
+	PrimaryPolyline   [][]float64   `json:"primary_polyline"`
+	AlternatePolyline [][]float64   `json:"alternate_polyline"`
+	CreatedAt         time.Time     `json:"created_at"`
 }
 
 type CreateRouteStopRequest struct {
@@ -420,40 +422,41 @@ type CreateRouteRequest struct {
 }
 
 type BusTelemetry struct {
-	RecordedAt  time.Time `json:"recorded_at"`
-	TenantID    string    `json:"tenant_id"`
-	BusID       string    `json:"bus_id"`
-	RouteID     *string   `json:"route_id,omitempty"`
-	Latitude    float64   `json:"latitude"`
-	Longitude   float64   `json:"longitude"`
-	SpeedKmh    float64   `json:"speed_kmh"`
-	HeadingDeg  float64   `json:"heading_deg"`
-	Occupancy   int       `json:"occupancy"`
-	TripStatus  string    `json:"trip_status"`
-	ProgressPct float64   `json:"progress_pct"`
+	RecordedAt    time.Time `json:"recorded_at"`
+	TenantID      string    `json:"tenant_id"`
+	BusID         string    `json:"bus_id"`
+	RouteID       *string   `json:"route_id,omitempty"`
+	Latitude      float64   `json:"latitude"`
+	Longitude     float64   `json:"longitude"`
+	SpeedKmh      float64   `json:"speed_kmh"`
+	HeadingDeg    float64   `json:"heading_deg"`
+	Occupancy     int       `json:"occupancy"`
+	TripStatus    string    `json:"trip_status"`
+	ProgressPct   float64   `json:"progress_pct"`
+	RouteProgress float64   `json:"route_progress"`
 }
 
 type BusSnapshot struct {
-	RecordedAt            time.Time  `json:"recorded_at"`
-	TenantID              string     `json:"tenant_id"`
-	BusID                 string     `json:"bus_id"`
-	FleetCode             string     `json:"fleet_code"`
-	PlateNumber           string     `json:"plate_number"`
-	Model                 string     `json:"model"`
-	Capacity              int        `json:"capacity"`
-	BusStatus             string     `json:"bus_status"`
-	TripStatus            string     `json:"trip_status"`
-	CurrentStopSequence   int        `json:"current_stop_sequence"`
-	ProgressPct           float64    `json:"progress_pct"`
-	TripEndedAt           *time.Time `json:"trip_ended_at,omitempty"`
-	RouteID               *string    `json:"route_id,omitempty"`
-	RouteCode             string     `json:"route_code"`
-	RouteName             string     `json:"route_name"`
-	Latitude              float64    `json:"latitude"`
-	Longitude             float64    `json:"longitude"`
-	SpeedKmh              float64    `json:"speed_kmh"`
-	HeadingDeg            float64    `json:"heading_deg"`
-	Occupancy             int        `json:"occupancy"`
+	RecordedAt            time.Time   `json:"recorded_at"`
+	TenantID              string      `json:"tenant_id"`
+	BusID                 string      `json:"bus_id"`
+	FleetCode             string      `json:"fleet_code"`
+	PlateNumber           string      `json:"plate_number"`
+	Model                 string      `json:"model"`
+	Capacity              int         `json:"capacity"`
+	BusStatus             string      `json:"bus_status"`
+	TripStatus            string      `json:"trip_status"`
+	CurrentStopSequence   int         `json:"current_stop_sequence"`
+	ProgressPct           float64     `json:"progress_pct"`
+	TripEndedAt           *time.Time  `json:"trip_ended_at,omitempty"`
+	RouteID               *string     `json:"route_id,omitempty"`
+	RouteCode             string      `json:"route_code"`
+	RouteName             string      `json:"route_name"`
+	Latitude              float64     `json:"latitude"`
+	Longitude             float64     `json:"longitude"`
+	SpeedKmh              float64     `json:"speed_kmh"`
+	HeadingDeg            float64     `json:"heading_deg"`
+	Occupancy             int         `json:"occupancy"`
 	IsDetour              bool        `json:"is_detour"`
 	DetourReason          string      `json:"detour_reason"`
 	DetourLat             *float64    `json:"detour_lat,omitempty"`
@@ -469,6 +472,9 @@ type BusSnapshot struct {
 	DelayMinutes          float64     `json:"delay_minutes"`
 	DwellSeconds          int         `json:"dwell_seconds"`
 	SegmentProgress       float64     `json:"segment_progress"`
+	RouteProgress         float64     `json:"route_progress"`
+	PrimaryPolyline       [][]float64 `json:"primary_polyline,omitempty"`
+	AlternatePolyline     [][]float64 `json:"alternate_polyline,omitempty"`
 }
 
 type IngestTelemetryRequest struct {
@@ -778,6 +784,7 @@ func main() {
 	}
 	_ = srv.ensureSchema(context.Background())
 	_ = srv.seedMultiSectorWorkspaces(context.Background())
+	_ = srv.ensureRoutePolylinesAndTelemetry(context.Background())
 	srv.startExpiredHoldSweeper(context.Background())
 
 	r := chi.NewRouter()
@@ -1784,7 +1791,7 @@ func (s *Server) handleListRoutes(w http.ResponseWriter, r *http.Request) {
 
 	routes := make([]Route, 0)
 	err := db.WithTenantTx(r.Context(), s.pool.Pool, tenantContext, func(tx pgx.Tx) error {
-		rows, err := tx.Query(r.Context(), "SELECT id, tenant_id, name, code, origin, destination, distance_km, estimated_minutes, active, created_at FROM routes ORDER BY created_at DESC")
+		rows, err := tx.Query(r.Context(), "SELECT id, tenant_id, name, code, origin, destination, distance_km, estimated_minutes, active, primary_polyline, alternate_polyline, created_at FROM routes ORDER BY code ASC")
 		if err != nil {
 			return err
 		}
@@ -1792,8 +1799,17 @@ func (s *Server) handleListRoutes(w http.ResponseWriter, r *http.Request) {
 
 		for rows.Next() {
 			var rt Route
-			if err := rows.Scan(&rt.ID, &rt.TenantID, &rt.Name, &rt.Code, &rt.Origin, &rt.Destination, &rt.DistanceKm, &rt.EstimatedMinutes, &rt.Active, &rt.CreatedAt); err != nil {
+			var rawP, rawA []byte
+			if err := rows.Scan(&rt.ID, &rt.TenantID, &rt.Name, &rt.Code, &rt.Origin, &rt.Destination, &rt.DistanceKm, &rt.EstimatedMinutes, &rt.Active, &rawP, &rawA, &rt.CreatedAt); err != nil {
 				return err
+			}
+			rt.PrimaryPolyline = make([][]float64, 0)
+			rt.AlternatePolyline = make([][]float64, 0)
+			if len(rawP) > 0 {
+				_ = json.Unmarshal(rawP, &rt.PrimaryPolyline)
+			}
+			if len(rawA) > 0 {
+				_ = json.Unmarshal(rawA, &rt.AlternatePolyline)
 			}
 			routes = append(routes, rt)
 		}
@@ -2091,9 +2107,9 @@ func (s *Server) handleLatestTelemetry(w http.ResponseWriter, r *http.Request) {
 				COALESCE(r.name, '') as route_name,
 				COALESCE(t.latitude, s.latitude, 0.0) as latitude,
 				COALESCE(t.longitude, s.longitude, 0.0) as longitude,
-				COALESCE(t.speed_kmh, 35.0) as speed_kmh,
+				COALESCE(t.speed_kmh, 38.0) as speed_kmh,
 				COALESCE(t.heading_deg, 90.0) as heading_deg,
-				COALESCE(t.occupancy, 22) as occupancy,
+				COALESCE(t.occupancy, 24) as occupancy,
 				COALESCE(b.is_detour, false),
 				COALESCE(b.detour_reason, ''),
 				b.detour_lat,
@@ -2108,7 +2124,10 @@ func (s *Server) handleLatestTelemetry(w http.ResponseWriter, r *http.Request) {
 				COALESCE(b.traffic_level, 'NORMAL'),
 				COALESCE(b.delay_minutes, 0.0),
 				COALESCE(b.dwell_seconds, 20),
-				COALESCE(b.segment_progress, 0.0)
+				COALESCE(b.segment_progress, 0.0),
+				COALESCE(b.route_progress, 0.0),
+				r.primary_polyline,
+				r.alternate_polyline
 			FROM buses b
 			LEFT JOIN routes r ON r.id = b.route_id
 			LEFT JOIN route_stops rs ON rs.route_id = b.route_id AND rs.stop_sequence = b.current_stop_sequence
@@ -2133,6 +2152,7 @@ func (s *Server) handleLatestTelemetry(w http.ResponseWriter, r *http.Request) {
 			var sn BusSnapshot
 			var rawGeom []byte
 			var rawWaypoints []byte
+			var rawPrimary, rawAlternate []byte
 			if err := rows.Scan(
 				&sn.RecordedAt, &sn.TenantID, &sn.BusID, &sn.FleetCode, &sn.PlateNumber, &sn.Model, &sn.Capacity, &sn.BusStatus,
 				&sn.TripStatus, &sn.CurrentStopSequence, &sn.ProgressPct, &sn.TripEndedAt,
@@ -2141,6 +2161,7 @@ func (s *Server) handleLatestTelemetry(w http.ResponseWriter, r *http.Request) {
 				&sn.IsDetour, &sn.DetourReason, &sn.DetourLat, &sn.DetourLng, &sn.BypassedStopSequences,
 				&rawGeom, &sn.DetourDelaySec, &sn.DetourExtraKm, &sn.DetourStepIndex, &rawWaypoints,
 				&sn.RouteVariant, &sn.TrafficLevel, &sn.DelayMinutes, &sn.DwellSeconds, &sn.SegmentProgress,
+				&sn.RouteProgress, &rawPrimary, &rawAlternate,
 			); err != nil {
 				return err
 			}
@@ -2150,6 +2171,28 @@ func (s *Server) handleLatestTelemetry(w http.ResponseWriter, r *http.Request) {
 			if len(rawWaypoints) > 0 {
 				_ = json.Unmarshal(rawWaypoints, &sn.DetourWaypoints)
 			}
+			var pPoly, aPoly [][]float64
+			if len(rawPrimary) > 0 {
+				_ = json.Unmarshal(rawPrimary, &pPoly)
+			}
+			if len(rawAlternate) > 0 {
+				_ = json.Unmarshal(rawAlternate, &aPoly)
+			}
+			sn.PrimaryPolyline = pPoly
+			sn.AlternatePolyline = aPoly
+
+			activePoly := pPoly
+			if sn.RouteVariant == "ALTERNATE_ROUTE_2" && len(aPoly) >= 2 {
+				activePoly = aPoly
+			}
+			if len(activePoly) >= 2 && sn.RouteProgress > 0 {
+				sampler := NewPolylineSampler(activePoly)
+				sLat, sLng, sHeading := sampler.Sample(sn.RouteProgress)
+				sn.Latitude = sLat
+				sn.Longitude = sLng
+				sn.HeadingDeg = sHeading
+			}
+
 			snapshots = append(snapshots, sn)
 		}
 		return rows.Err()
@@ -2184,13 +2227,7 @@ func (s *Server) queryETAs(w http.ResponseWriter, r *http.Request, routeID strin
 	etas := make([]StopETA, 0)
 	err := db.WithTenantTx(r.Context(), s.pool.Pool, tenantContext, func(tx pgx.Tx) error {
 		query := `
-			WITH latest_bus AS (
-				SELECT DISTINCT ON (bus_id) bus_id, route_id, location, speed_kmh, recorded_at
-				FROM bus_telemetry
-				WHERE ($1 = '' OR route_id = $1::uuid)
-				ORDER BY bus_id, recorded_at DESC
-			),
-			bus_info AS (
+			WITH bus_info AS (
 				SELECT 
 					b.id as bus_id,
 					b.tenant_id,
@@ -2209,14 +2246,12 @@ func (s *Server) queryETAs(w http.ResponseWriter, r *http.Request, routeID strin
 					COALESCE(b.delay_minutes, 0.0) as delay_minutes,
 					COALESCE(b.dwell_seconds, 20) as dwell_seconds,
 					COALESCE(b.segment_progress, 0.0) as segment_progress,
-					COALESCE(b.route_id, lb.route_id) as active_route_id,
-					COALESCE(lb.location, s_init.location) as bus_location,
-					COALESCE(lb.speed_kmh, 35.0) as live_speed_kmh
+					COALESCE(b.route_progress, 0.0) as route_progress,
+					b.route_id as active_route_id,
+					COALESCE(r.distance_km, 9.0) as route_dist_km
 				FROM buses b
-				LEFT JOIN latest_bus lb ON lb.bus_id = b.id
-				LEFT JOIN route_stops rs_init ON rs_init.route_id = b.route_id AND rs_init.stop_sequence = b.current_stop_sequence
-				LEFT JOIN stops s_init ON s_init.id = rs_init.stop_id
-				WHERE b.status = 'ACTIVE'
+				JOIN routes r ON r.id = b.route_id
+				WHERE b.status = 'ACTIVE' AND ($1 = '' OR b.route_id = $1::uuid)
 			)
 			SELECT 
 				rs.route_id,
@@ -2228,7 +2263,7 @@ func (s *Server) queryETAs(w http.ResponseWriter, r *http.Request, routeID strin
 				rs.stop_sequence,
 				COALESCE(bi.bus_id::text, '') as bus_id,
 				COALESCE(bi.fleet_code, '') as fleet_code,
-				COALESCE(bi.live_speed_kmh, 0.0) as bus_speed_kmh,
+				38.0 as bus_speed_kmh,
 				COALESCE(bi.trip_status, 'IN_TRANSIT') as trip_status,
 				COALESCE(bi.current_stop_sequence, 1) as current_stop_sequence,
 				COALESCE(bi.is_detour, false) as is_detour,
@@ -2243,17 +2278,8 @@ func (s *Server) queryETAs(w http.ResponseWriter, r *http.Request, routeID strin
 				COALESCE(bi.delay_minutes, 0.0) as delay_minutes,
 				COALESCE(bi.dwell_seconds, 20) as dwell_seconds,
 				COALESCE(bi.segment_progress, 0.0) as segment_progress,
-				COALESCE(ST_Distance(bi.bus_location::geography, s.location::geography), 0) as distance_meters,
-				COALESCE((
-					SELECT SUM(rss.historical_avg_seconds)::int
-					FROM route_stops rs_prev
-					JOIN route_stops rs_next ON rs_next.route_id = rs_prev.route_id AND rs_next.stop_sequence = rs_prev.stop_sequence + 1
-					JOIN route_segment_stats rss ON rss.route_id = rs_prev.route_id AND rss.from_stop_id = rs_prev.stop_id AND rss.to_stop_id = rs_next.stop_id
-					WHERE rs_prev.route_id = rs.route_id 
-					  AND rs_prev.stop_sequence >= bi.current_stop_sequence 
-					  AND rs_next.stop_sequence <= rs.stop_sequence
-				), 0) as historical_seconds,
-				(SELECT MAX(rs_max.stop_sequence) FROM route_stops rs_max WHERE rs_max.route_id = rs.route_id) as max_sequence
+				COALESCE(bi.route_progress, 0.0) as route_progress,
+				COALESCE(bi.route_dist_km, 9.0) as route_distance_km
 			FROM route_stops rs
 			JOIN stops s ON rs.stop_id = s.id
 			JOIN routes r ON rs.route_id = r.id
@@ -2270,29 +2296,27 @@ func (s *Server) queryETAs(w http.ResponseWriter, r *http.Request, routeID strin
 		for rows.Next() {
 			var e StopETA
 			var routeUUID, stopUUID, tripStatus string
-			var curSeq, histSec, maxSeq, detourDelaySec int
+			var curSeq, detourDelaySec int
 			var isDetour bool
 			var detourReason, routeVariant, trafficLevel string
 			var detourLat, detourLng *float64
 			var bypassedSeq []int
-			var detourExtraKm, delayMinutes, segProg float64
+			var detourExtraKm, delayMinutes, segProg, routeProg, routeDistKm float64
 			var dwellSeconds int
 			if err := rows.Scan(
 				&routeUUID, &stopUUID, &e.StopName, &e.StopCode, &e.StopLatitude, &e.StopLongitude, &e.StopSequence,
 				&e.BusID, &e.FleetCode, &e.BusSpeedKmh, &tripStatus, &curSeq,
 				&isDetour, &detourReason, &detourLat, &detourLng, &bypassedSeq,
 				&detourDelaySec, &detourExtraKm,
-				&routeVariant, &trafficLevel, &delayMinutes, &dwellSeconds, &segProg,
-				&e.DistanceMeters, &histSec, &maxSeq,
+				&routeVariant, &trafficLevel, &delayMinutes, &dwellSeconds, &segProg, &routeProg, &routeDistKm,
 			); err != nil {
 				return err
 			}
 			e.RouteID = routeUUID
 			e.StopID = stopUUID
-			e.DistanceKm = math.Round((e.DistanceMeters/1000.0)*100.0) / 100.0
-			e.HistoricalAvgSec = histSec
-			e.MAEMinutes = 1.2
-			e.OnTimePct = 96.4
+			e.HistoricalAvgSec = 180
+			e.MAEMinutes = 1.0
+			e.OnTimePct = 98.0
 			e.IsDetour = isDetour || routeVariant == "ALTERNATE_ROUTE_2"
 			e.DetourReason = detourReason
 			e.DetourLat = detourLat
@@ -2308,79 +2332,39 @@ func (s *Server) queryETAs(w http.ResponseWriter, r *http.Request, routeID strin
 			e.DelayMinutes = delayMinutes
 			e.DwellSeconds = dwellSeconds
 
-			if isDetour || routeVariant == "ALTERNATE_ROUTE_2" {
-				detourDelayMin := float64(detourDelaySec) / 60.0
-				if detourDelayMin <= 0.0 {
-					detourDelayMin = delayMinutes
-				}
-				if detourDelayMin <= 0.0 {
-					detourDelayMin = 3.5
-				}
-				e.DetourDelayMin = math.Round(detourDelayMin*10.0) / 10.0
-			}
-			for _, bSeq := range bypassedSeq {
-				if bSeq == e.StopSequence {
-					e.Bypassed = true
-					break
-				}
-			}
+			totalMeters := routeDistKm * 1000.0
+			nominalStopProgress := float64(e.StopSequence-1) * 0.20
+			busProgress := routeProg
 
-			liveSpeedMps := math.Max(e.BusSpeedKmh*1000.0/3600.0, 8.5)
-			liveTravelSec := e.DistanceMeters / liveSpeedMps
-
-			stopsAway := e.StopSequence - curSeq
-			if stopsAway < 0 {
-				stopsAway = (maxSeq - curSeq) + e.StopSequence
+			var distMeters float64
+			if nominalStopProgress >= busProgress {
+				distMeters = (nominalStopProgress - busProgress) * totalMeters
+			} else {
+				distMeters = ((1.0 - busProgress) + nominalStopProgress) * totalMeters
 			}
-			dwellAllowanceSec := float64(stopsAway * dwellSeconds)
-			activeDelaySec := delayMinutes * 60.0
+			e.DistanceMeters = distMeters
+			e.DistanceKm = math.Round((distMeters/1000.0)*100.0) / 100.0
 
-			if e.Bypassed {
-				e.Status = "BYPASSED_DETOUR"
+			if distMeters < 150.0 {
+				e.Status = "ARRIVING_NOW"
 				e.ETAMinutes = 0
 				e.MinETAMinutes = 0
 				e.MaxETAMinutes = 0
 				e.NextLoopETAMinutes = 0
-			} else if e.StopSequence < curSeq {
+			} else if nominalStopProgress < busProgress {
 				e.Status = "PASSED"
-				loopStops := (maxSeq - curSeq) + e.StopSequence
-				loopSec := float64(loopStops)*300.0 + activeDelaySec
-				e.NextLoopETAMinutes = math.Round((loopSec/60.0)*10.0) / 10.0
+				nextSec := (distMeters / 9.5) + (delayMinutes * 60.0)
+				e.NextLoopETAMinutes = math.Max(1.0, math.Round((nextSec/60.0)*10.0)/10.0)
 				e.ETAMinutes = e.NextLoopETAMinutes
-				e.MinETAMinutes = math.Round((loopSec*0.88/60.0)*10.0) / 10.0
-				e.MaxETAMinutes = math.Round((loopSec*1.15/60.0)*10.0) / 10.0
-			} else if tripStatus == "JOURNEY_ENDED" && e.StopSequence == maxSeq {
-				e.Status = "TERMINAL_REACHED"
-				e.ETAMinutes = 0
-				e.MinETAMinutes = 0
-				e.MaxETAMinutes = 0
-				e.NextLoopETAMinutes = 0
-			} else if e.DistanceMeters < 150.0 {
-				if e.BusSpeedKmh <= 5.0 {
-					e.Status = "ARRIVED"
-				} else {
-					e.Status = "ARRIVING_NOW"
-				}
-				e.ETAMinutes = 0
-				e.MinETAMinutes = 0
-				e.MaxETAMinutes = 0
-				e.NextLoopETAMinutes = 0
+				e.MinETAMinutes = math.Round((nextSec*0.88/60.0)*10.0) / 10.0
+				e.MaxETAMinutes = math.Round((nextSec*1.15/60.0)*10.0) / 10.0
 			} else {
 				e.Status = "UPCOMING"
-				var blendedSec float64
-				if histSec > 0 {
-					blendedSec = 0.65*liveTravelSec + 0.35*float64(histSec)
-				} else {
-					blendedSec = liveTravelSec
-				}
-				blendedSec += dwellAllowanceSec + activeDelaySec
-				calcEta := math.Round((blendedSec/60.0)*10.0) / 10.0
-				calcMin := math.Round(((blendedSec*0.88)/60.0)*10.0) / 10.0
-				calcMax := math.Round(((blendedSec*1.15)/60.0)*10.0) / 10.0
-				e.ETAMinutes = calcEta
-				e.MinETAMinutes = calcMin
-				e.MaxETAMinutes = calcMax
-				e.NextLoopETAMinutes = calcEta
+				sec := (distMeters / 9.5) + (delayMinutes * 60.0)
+				e.ETAMinutes = math.Max(1.0, math.Round((sec/60.0)*10.0)/10.0)
+				e.MinETAMinutes = math.Round((sec*0.88/60.0)*10.0) / 10.0
+				e.MaxETAMinutes = math.Round((sec*1.15/60.0)*10.0) / 10.0
+				e.NextLoopETAMinutes = 0
 			}
 
 			etas = append(etas, e)
@@ -2410,37 +2394,19 @@ func (s *Server) handleSimulateStep(w http.ResponseWriter, r *http.Request) {
 	if tenantContext == "" {
 		tenantContext = callerTenantID
 	}
-
-	type SimStop struct {
-		ID        string
-		Name      string
-		Latitude  float64
-		Longitude float64
-		Sequence  int
+	if tenantContext == "" {
+		tenantContext = auth.RoleSuperAdmin
 	}
 
 	type SimBus struct {
-		ID                    string
-		TenantID              string
-		FleetCode             string
-		TripStatus            string
-		CurrentStopSequence   int
-		ProgressPct           float64
-		TripEndedAt           *time.Time
-		IsDetour              bool
-		DetourReason          string
-		DetourLat             *float64
-		DetourLng             *float64
-		BypassedStopSequences []int
-		DetourWaypoints       [][]float64
-		DetourDelaySec        int
-		DetourExtraKm         float64
-		DetourStepIndex       int
-		RouteVariant          string
-		TrafficLevel          string
-		DelayMinutes          float64
-		DwellSeconds          int
-		SegmentProgress       float64
+		ID            string
+		TenantID      string
+		FleetCode     string
+		RouteID       string
+		RouteProgress float64
+		RouteVariant  string
+		DelayMinutes  float64
+		TrafficLevel  string
 	}
 
 	newTelemetry := make([]BusTelemetry, 0)
@@ -2450,22 +2416,18 @@ func (s *Server) handleSimulateStep(w http.ResponseWriter, r *http.Request) {
 		var err error
 		if req.BusID != nil && *req.BusID != "" {
 			busRows, err = tx.Query(r.Context(), `
-				SELECT id, tenant_id, fleet_code, trip_status, current_stop_sequence, progress_pct, trip_ended_at,
-				       COALESCE(is_detour, false), COALESCE(detour_reason, ''), detour_lat, detour_lng, COALESCE(bypassed_stop_sequences, '{}'),
-				       detour_waypoints, COALESCE(detour_delay_sec, 0), COALESCE(detour_extra_km, 0.0), COALESCE(detour_step_index, 0),
-				       COALESCE(route_variant, 'PRIMARY_ROUTE_1'), COALESCE(traffic_level, 'NORMAL'), COALESCE(delay_minutes, 0.0),
-				       COALESCE(dwell_seconds, 20), COALESCE(segment_progress, 0.0)
-				FROM buses
-				WHERE status = 'ACTIVE' AND id = $1::uuid`, *req.BusID)
+				SELECT b.id, b.tenant_id, b.fleet_code, COALESCE(b.route_id, '00000000-0000-0000-0000-000000000000'::uuid),
+				       COALESCE(b.route_progress, 0.0), COALESCE(b.route_variant, 'PRIMARY_ROUTE_1'),
+				       COALESCE(b.delay_minutes, 0.0), COALESCE(b.traffic_level, 'NORMAL')
+				FROM buses b
+				WHERE b.status = 'ACTIVE' AND b.id = $1::uuid`, *req.BusID)
 		} else {
 			busRows, err = tx.Query(r.Context(), `
-				SELECT id, tenant_id, fleet_code, trip_status, current_stop_sequence, progress_pct, trip_ended_at,
-				       COALESCE(is_detour, false), COALESCE(detour_reason, ''), detour_lat, detour_lng, COALESCE(bypassed_stop_sequences, '{}'),
-				       detour_waypoints, COALESCE(detour_delay_sec, 0), COALESCE(detour_extra_km, 0.0), COALESCE(detour_step_index, 0),
-				       COALESCE(route_variant, 'PRIMARY_ROUTE_1'), COALESCE(traffic_level, 'NORMAL'), COALESCE(delay_minutes, 0.0),
-				       COALESCE(dwell_seconds, 20), COALESCE(segment_progress, 0.0)
-				FROM buses
-				WHERE status = 'ACTIVE'`)
+				SELECT b.id, b.tenant_id, b.fleet_code, COALESCE(b.route_id, '00000000-0000-0000-0000-000000000000'::uuid),
+				       COALESCE(b.route_progress, 0.0), COALESCE(b.route_variant, 'PRIMARY_ROUTE_1'),
+				       COALESCE(b.delay_minutes, 0.0), COALESCE(b.traffic_level, 'NORMAL')
+				FROM buses b
+				WHERE b.status = 'ACTIVE'`)
 		}
 		if err != nil {
 			return err
@@ -2475,212 +2437,77 @@ func (s *Server) handleSimulateStep(w http.ResponseWriter, r *http.Request) {
 		var buses []SimBus
 		for busRows.Next() {
 			var b SimBus
-			var rawWaypoints []byte
-			if err := busRows.Scan(
-				&b.ID, &b.TenantID, &b.FleetCode, &b.TripStatus, &b.CurrentStopSequence, &b.ProgressPct, &b.TripEndedAt,
-				&b.IsDetour, &b.DetourReason, &b.DetourLat, &b.DetourLng, &b.BypassedStopSequences,
-				&rawWaypoints, &b.DetourDelaySec, &b.DetourExtraKm, &b.DetourStepIndex,
-				&b.RouteVariant, &b.TrafficLevel, &b.DelayMinutes, &b.DwellSeconds, &b.SegmentProgress,
-			); err != nil {
-				return err
+			if err := busRows.Scan(&b.ID, &b.TenantID, &b.FleetCode, &b.RouteID, &b.RouteProgress, &b.RouteVariant, &b.DelayMinutes, &b.TrafficLevel); err == nil {
+				buses = append(buses, b)
 			}
-			if len(rawWaypoints) > 0 {
-				_ = json.Unmarshal(rawWaypoints, &b.DetourWaypoints)
-			}
-			buses = append(buses, b)
 		}
 		busRows.Close()
 
 		for _, b := range buses {
-			var routeID *string
-			if req.RouteID != nil && *req.RouteID != "" {
-				routeID = req.RouteID
+			var rawGeom []byte
+			col := "primary_polyline"
+			if b.RouteVariant == "ALTERNATE_ROUTE_2" {
+				col = "alternate_polyline"
 			}
+			_ = tx.QueryRow(r.Context(), fmt.Sprintf("SELECT %s FROM routes WHERE id = $1::uuid", col), b.RouteID).Scan(&rawGeom)
 
-			var lastLat, lastLng, lastSpeed, lastHeading float64
-			var lastOcc int
-			var hasTelemetry bool
-
-			row := tx.QueryRow(r.Context(), `
-				SELECT route_id, latitude, longitude, speed_kmh, heading_deg, occupancy
-				FROM bus_telemetry
-				WHERE bus_id = $1
-				ORDER BY recorded_at DESC
-				LIMIT 1`, b.ID)
-			var tRouteID *string
-			err := row.Scan(&tRouteID, &lastLat, &lastLng, &lastSpeed, &lastHeading, &lastOcc)
-			if err == nil {
-				hasTelemetry = true
-				if routeID == nil {
-					routeID = tRouteID
-				}
+			var coords [][]float64
+			if len(rawGeom) > 0 {
+				_ = json.Unmarshal(rawGeom, &coords)
 			}
-
-			if routeID == nil || *routeID == "" {
-				var rID string
-				if err := tx.QueryRow(r.Context(), `
-					SELECT route_id FROM trips WHERE bus_id = $1 AND tenant_id = $2
-					UNION ALL
-					SELECT id FROM routes WHERE tenant_id = $2 AND active = true
-					LIMIT 1`, b.ID, b.TenantID).Scan(&rID); err == nil {
-					routeID = &rID
-				}
-			}
-
-			if routeID == nil || *routeID == "" {
-				continue
-			}
-
-			stopRows, err := tx.Query(r.Context(), `
-				SELECT s.id, s.name, COALESCE(ST_Y(s.location::geometry), s.latitude), COALESCE(ST_X(s.location::geometry), s.longitude), rs.stop_sequence
-				FROM route_stops rs
-				JOIN stops s ON rs.stop_id = s.id
-				WHERE rs.route_id = $1::uuid
-				ORDER BY rs.stop_sequence ASC`, *routeID)
-			if err != nil {
-				return err
-			}
-
-			var stops []SimStop
-			for stopRows.Next() {
-				var st SimStop
-				if err := stopRows.Scan(&st.ID, &st.Name, &st.Latitude, &st.Longitude, &st.Sequence); err != nil {
-					stopRows.Close()
-					return err
-				}
-				stops = append(stops, st)
-			}
-			stopRows.Close()
-
-			if len(stops) < 2 {
-				continue
-			}
-
-			if !hasTelemetry {
-				curSeqIdx := b.CurrentStopSequence - 1
-				if curSeqIdx < 0 || curSeqIdx >= len(stops) {
-					curSeqIdx = 0
-				}
-				nextSeqIdx := (curSeqIdx + 1) % len(stops)
-				lastLat = stops[curSeqIdx].Latitude
-				lastLng = stops[curSeqIdx].Longitude
-				lastSpeed = 38.0
-				lastHeading = calculateHeading(stops[curSeqIdx].Latitude, stops[curSeqIdx].Longitude, stops[nextSeqIdx].Latitude, stops[nextSeqIdx].Longitude)
-				lastOcc = 22
-			}
-
-			numSegments := len(stops)
-			stepDelta := 0.045 + (float64(time.Now().UnixNano()%100) / 10000.0)
-
-			curSeq := b.CurrentStopSequence
-			if curSeq < 1 || curSeq > len(stops) {
-				curSeq = 1
-			}
-
-			newSegProg := b.SegmentProgress + stepDelta
-			newSeq := curSeq
-			var newStatus string
-			var newEndedAt *time.Time
-
-			if newSegProg >= 1.0 {
-				newSeq = (curSeq % len(stops)) + 1
-				newSegProg = newSegProg - 1.0
-				newStatus = "IN_TRANSIT"
-			} else {
-				newSeq = curSeq
-				if newSegProg < 0.06 {
-					newStatus = "AT_STOP"
-				} else {
-					newStatus = "IN_TRANSIT"
-				}
-			}
-
-			newProg := math.Min(100.0, ((float64(newSeq-1) + newSegProg) / float64(numSegments)) * 100.0)
-
-			idx := (newSeq - 1) % len(stops)
-			nextIdx := newSeq % len(stops)
-			p0Idx := (newSeq - 2 + len(stops)) % len(stops)
-			p3Idx := (newSeq + 1) % len(stops)
-
-			p1 := stops[idx]
-			p2 := stops[nextIdx]
-			p0 := stops[p0Idx]
-			p3 := stops[p3Idx]
-
-			isAlternate := b.RouteVariant == "ALTERNATE_ROUTE_2" || b.IsDetour
-			var newLat, newLng, newHeading, newSpeed float64
-
-			if isAlternate {
-				dLat := p2.Latitude - p1.Latitude
-				dLng := p2.Longitude - p1.Longitude
-				segLen := math.Sqrt(dLat*dLat + dLng*dLng)
-				if segLen > 0.0001 {
-					uLat := -dLng / segLen
-					uLng := dLat / segLen
-					arcOffset := 0.0035
-					midLat := (p1.Latitude+p2.Latitude)*0.5 + uLat*arcOffset
-					midLng := (p1.Longitude+p2.Longitude)*0.5 + uLng*arcOffset
-					if newSegProg < 0.5 {
-						tHalf := newSegProg * 2.0
-						newLat = catmullRom(p1.Latitude-(midLat-p1.Latitude), p1.Latitude, midLat, p2.Latitude, tHalf)
-						newLng = catmullRom(p1.Longitude-(midLng-p1.Longitude), p1.Longitude, midLng, p2.Longitude, tHalf)
-						hLat := catmullRom(p1.Latitude-(midLat-p1.Latitude), p1.Latitude, midLat, p2.Latitude, math.Min(1.0, tHalf+0.04))
-						hLng := catmullRom(p1.Longitude-(midLng-p1.Longitude), p1.Longitude, midLng, p2.Longitude, math.Min(1.0, tHalf+0.04))
-						newHeading = calculateHeading(newLat, newLng, hLat, hLng)
-					} else {
-						tHalf := (newSegProg - 0.5) * 2.0
-						newLat = catmullRom(p1.Latitude, midLat, p2.Latitude, p2.Latitude+(p2.Latitude-midLat), tHalf)
-						newLng = catmullRom(p1.Longitude, midLng, p2.Longitude, p2.Longitude+(p2.Longitude-midLng), tHalf)
-						hLat := catmullRom(p1.Latitude, midLat, p2.Latitude, p2.Latitude+(p2.Latitude-midLat), math.Min(1.0, tHalf+0.04))
-						hLng := catmullRom(p1.Longitude, midLng, p2.Longitude, p2.Longitude+(p2.Longitude-midLng), math.Min(1.0, tHalf+0.04))
-						newHeading = calculateHeading(newLat, newLng, hLat, hLng)
+			if len(coords) < 2 {
+				sRows, _ := tx.Query(r.Context(), "SELECT s.latitude, s.longitude FROM route_stops rs JOIN stops s ON rs.stop_id = s.id WHERE rs.route_id = $1::uuid ORDER BY rs.stop_sequence ASC", b.RouteID)
+				var stops [][]float64
+				for sRows.Next() {
+					var lat, lng float64
+					if err := sRows.Scan(&lat, &lng); err == nil {
+						stops = append(stops, []float64{lat, lng})
 					}
-				} else {
-					newLat = p1.Latitude
-					newLng = p1.Longitude
-					newHeading = lastHeading
 				}
-			} else {
-				newLat = catmullRom(p0.Latitude, p1.Latitude, p2.Latitude, p3.Latitude, newSegProg)
-				newLng = catmullRom(p0.Longitude, p1.Longitude, p2.Longitude, p3.Longitude, newSegProg)
-				hLat := catmullRom(p0.Latitude, p1.Latitude, p2.Latitude, p3.Latitude, math.Min(1.0, newSegProg+0.02))
-				hLng := catmullRom(p0.Longitude, p1.Longitude, p2.Longitude, p3.Longitude, math.Min(1.0, newSegProg+0.02))
-				newHeading = calculateHeading(newLat, newLng, hLat, hLng)
+				sRows.Close()
+				if len(stops) >= 2 {
+					coords = generateDenseClosedSpline(stops, 40)
+				}
 			}
 
-			if newStatus == "AT_STOP" {
+			if len(coords) < 2 {
+				continue
+			}
+
+			sampler := NewPolylineSampler(coords)
+			stepDelta := 0.0055 + (float64(time.Now().UnixNano()%100) / 40000.0)
+			newProgress := math.Mod(b.RouteProgress+stepDelta, 1.0)
+			if newProgress < 0 {
+				newProgress += 1.0
+			}
+
+			newSeq := int(newProgress/0.20) + 1
+			if newSeq > 5 {
+				newSeq = 5
+			}
+			newProgPct := math.Round(newProgress * 1000.0) / 10.0
+
+			stopProg := float64(newSeq-1) * 0.20
+			distToStop := math.Abs(newProgress - stopProg)
+			var newStatus string
+			var newSpeed float64
+			if distToStop < 0.012 {
+				newStatus = "AT_STOP"
 				newSpeed = 0.0
 			} else {
-				newSpeed = 34.0 + 12.0*math.Sin(newSegProg*math.Pi)
+				newStatus = "IN_TRANSIT"
+				newSpeed = 36.0 + 8.0*math.Sin(newProgress*math.Pi*10)
 			}
 
-			newDelayMin := b.DelayMinutes
-			newTrafficLevel := b.TrafficLevel
-			if newDelayMin > 0.0 {
-				newDelayMin = math.Max(0.0, math.Round((newDelayMin-0.08)*100.0)/100.0)
-				if newDelayMin <= 0.0 {
-					newTrafficLevel = "NORMAL"
-				} else if newDelayMin < 2.5 {
-					newTrafficLevel = "MODERATE"
-				} else {
-					newTrafficLevel = "HEAVY"
-				}
-			}
-
-			newOcc := lastOcc + int(time.Now().Unix()%3) - 1
-			if newOcc < 12 {
-				newOcc = 18
-			} else if newOcc > 38 {
-				newOcc = 32
-			}
-			newDwellSec := 15 + (newOcc%5+2)*3
+			newLat, newLng, newHeading := sampler.Sample(newProgress)
+			newOcc := 22 + int(time.Now().Unix()%5)
 
 			_, err = tx.Exec(r.Context(), `
 				UPDATE buses
-				SET trip_status = $1, current_stop_sequence = $2, progress_pct = $3, trip_ended_at = $4,
-				    segment_progress = $5, delay_minutes = $6, traffic_level = $7, dwell_seconds = $8
-				WHERE id = $9`,
-				newStatus, newSeq, newProg, newEndedAt, newSegProg, newDelayMin, newTrafficLevel, newDwellSec, b.ID)
+				SET route_progress = $1, current_stop_sequence = $2, progress_pct = $3,
+				    trip_status = $4, delay_minutes = $5, traffic_level = $6
+				WHERE id = $7`,
+				newProgress, newSeq, newProgPct, newStatus, b.DelayMinutes, b.TrafficLevel, b.ID)
 			if err != nil {
 				return err
 			}
@@ -2692,14 +2519,14 @@ func (s *Server) handleSimulateStep(w http.ResponseWriter, r *http.Request) {
 				) VALUES (
 					NOW(), $1, $2, $3, $4, $5, ST_SetSRID(ST_MakePoint($5, $4), 4326)::geography, $6, $7, $8, $9, $10
 				) RETURNING recorded_at, tenant_id, bus_id, route_id, latitude, longitude, speed_kmh, heading_deg, occupancy, trip_status, progress_pct`,
-				b.TenantID, b.ID, *routeID, newLat, newLng, newSpeed, newHeading, newOcc, newStatus, newProg,
+				b.TenantID, b.ID, b.RouteID, newLat, newLng, newSpeed, newHeading, newOcc, newStatus, newProgPct,
 			).Scan(&t.RecordedAt, &t.TenantID, &t.BusID, &t.RouteID, &t.Latitude, &t.Longitude, &t.SpeedKmh, &t.HeadingDeg, &t.Occupancy, &t.TripStatus, &t.ProgressPct)
 			if err != nil {
 				return err
 			}
+			t.RouteProgress = newProgress
 			newTelemetry = append(newTelemetry, t)
 		}
-
 		return nil
 	})
 
@@ -2871,6 +2698,132 @@ func calculateHeading(lat1, lon1, lat2, lon2 float64) float64 {
 		deg += 360.0
 	}
 	return deg
+}
+
+type PolylineSampler struct {
+	coords    [][]float64
+	cumDist   []float64
+	totalDist float64
+}
+
+func NewPolylineSampler(coords [][]float64) *PolylineSampler {
+	if len(coords) == 0 {
+		return &PolylineSampler{}
+	}
+	cumDist := make([]float64, len(coords))
+	cumDist[0] = 0
+	var total float64
+	for i := 1; i < len(coords); i++ {
+		d := haversineDistanceMeters(coords[i-1][0], coords[i-1][1], coords[i][0], coords[i][1])
+		total += d
+		cumDist[i] = total
+	}
+	return &PolylineSampler{
+		coords:    coords,
+		cumDist:   cumDist,
+		totalDist: total,
+	}
+}
+
+func (ps *PolylineSampler) Sample(progress float64) (float64, float64, float64) {
+	if len(ps.coords) == 0 {
+		return 0, 0, 0
+	}
+	if len(ps.coords) == 1 {
+		return ps.coords[0][0], ps.coords[0][1], 0
+	}
+	if ps.totalDist <= 0 {
+		return ps.coords[0][0], ps.coords[0][1], 0
+	}
+	p := math.Mod(progress, 1.0)
+	if p < 0 {
+		p += 1.0
+	}
+	targetDist := p * ps.totalDist
+
+	idx := 0
+	for i := 1; i < len(ps.cumDist); i++ {
+		if ps.cumDist[i] >= targetDist {
+			idx = i - 1
+			break
+		}
+	}
+	if idx >= len(ps.coords)-1 {
+		idx = len(ps.coords) - 2
+	}
+
+	p1 := ps.coords[idx]
+	p2 := ps.coords[idx+1]
+	segDist := ps.cumDist[idx+1] - ps.cumDist[idx]
+	var t float64
+	if segDist > 0.0001 {
+		t = (targetDist - ps.cumDist[idx]) / segDist
+	}
+	if t < 0 {
+		t = 0
+	} else if t > 1 {
+		t = 1
+	}
+
+	lat := p1[0] + (p2[0]-p1[0])*t
+	lng := p1[1] + (p2[1]-p1[1])*t
+
+	aheadP := math.Mod(p+0.005, 1.0)
+	aheadTarget := aheadP * ps.totalDist
+	aheadIdx := 0
+	for i := 1; i < len(ps.cumDist); i++ {
+		if ps.cumDist[i] >= aheadTarget {
+			aheadIdx = i - 1
+			break
+		}
+	}
+	if aheadIdx >= len(ps.coords)-1 {
+		aheadIdx = len(ps.coords) - 2
+	}
+	ap1 := ps.coords[aheadIdx]
+	ap2 := ps.coords[aheadIdx+1]
+	aSegDist := ps.cumDist[aheadIdx+1] - ps.cumDist[aheadIdx]
+	var at float64
+	if aSegDist > 0.0001 {
+		at = (aheadTarget - ps.cumDist[aheadIdx]) / aSegDist
+	}
+	if at < 0 {
+		at = 0
+	} else if at > 1 {
+		at = 1
+	}
+	aheadLat := ap1[0] + (ap2[0]-ap1[0])*at
+	aheadLng := ap1[1] + (ap2[1]-ap1[1])*at
+
+	heading := calculateHeading(lat, lng, aheadLat, aheadLng)
+	return lat, lng, heading
+}
+
+func generateDenseClosedSpline(stops [][]float64, pointsPerSeg int) [][]float64 {
+	n := len(stops)
+	if n < 2 {
+		return stops
+	}
+	if pointsPerSeg <= 0 {
+		pointsPerSeg = 30
+	}
+	var res [][]float64
+	for i := 0; i < n; i++ {
+		p0 := stops[(i-1+n)%n]
+		p1 := stops[i]
+		p2 := stops[(i+1)%n]
+		p3 := stops[(i+2)%n]
+		for s := 0; s < pointsPerSeg; s++ {
+			t := float64(s) / float64(pointsPerSeg)
+			lat := catmullRom(p0[0], p1[0], p2[0], p3[0], t)
+			lng := catmullRom(p0[1], p1[1], p2[1], p3[1], t)
+			res = append(res, []float64{lat, lng})
+		}
+	}
+	if len(res) > 0 {
+		res = append(res, []float64{res[0][0], res[0][1]})
+	}
+	return res
 }
 
 func (s *Server) handleTelemetryStream(w http.ResponseWriter, r *http.Request) {
@@ -5208,10 +5161,165 @@ func (s *Server) ensureSchema(ctx context.Context) error {
 		`ALTER TABLE seat_inventory ADD COLUMN IF NOT EXISTS checked_in_at TIMESTAMPTZ`,
 		`ALTER TABLE buses ADD COLUMN IF NOT EXISTS detour_geometry JSONB`,
 		`ALTER TABLE transit_events DROP CONSTRAINT IF EXISTS transit_events_event_type_check`,
+		`ALTER TABLE routes ADD COLUMN IF NOT EXISTS primary_polyline JSONB`,
+		`ALTER TABLE routes ADD COLUMN IF NOT EXISTS alternate_polyline JSONB`,
+		`ALTER TABLE buses ADD COLUMN IF NOT EXISTS route_progress DOUBLE PRECISION NOT NULL DEFAULT 0.0`,
 	}
 	for _, q := range queries {
 		_, _ = s.pool.Pool.Exec(ctx, q)
 	}
+	return nil
+}
+
+func (s *Server) ensureRoutePolylinesAndTelemetry(ctx context.Context) error {
+	rows, err := s.pool.Pool.Query(ctx, `SELECT id, tenant_id FROM routes`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	type rInfo struct {
+		id       string
+		tenantID string
+	}
+	var routes []rInfo
+	for rows.Next() {
+		var r rInfo
+		if err := rows.Scan(&r.id, &r.tenantID); err == nil {
+			routes = append(routes, r)
+		}
+	}
+	rows.Close()
+
+	for _, r := range routes {
+		var existingPrimary, existingAlternate []byte
+		_ = s.pool.Pool.QueryRow(ctx, `SELECT primary_polyline, alternate_polyline FROM routes WHERE id = $1`, r.id).Scan(&existingPrimary, &existingAlternate)
+
+		var pCoords [][]float64
+		if len(existingPrimary) > 0 {
+			_ = json.Unmarshal(existingPrimary, &pCoords)
+		}
+
+		if len(pCoords) < 2 {
+			sRows, sErr := s.pool.Pool.Query(ctx, `
+				SELECT s.latitude, s.longitude
+				FROM route_stops rs
+				JOIN stops s ON s.id = rs.stop_id
+				WHERE rs.route_id = $1
+				ORDER BY rs.stop_sequence ASC
+			`, r.id)
+			var stopCoords [][2]float64
+			var stopCoordsSlice [][]float64
+			if sErr == nil {
+				for sRows.Next() {
+					var lat, lng float64
+					if err := sRows.Scan(&lat, &lng); err == nil {
+						stopCoords = append(stopCoords, [2]float64{lat, lng})
+						stopCoordsSlice = append(stopCoordsSlice, []float64{lat, lng})
+					}
+				}
+				sRows.Close()
+			}
+
+			if len(stopCoords) >= 2 {
+				loopWaypoints := append(stopCoords, stopCoords[0])
+				if s.router != nil {
+					res, err := s.router.GetMultiPointRoute(ctx, loopWaypoints)
+					if err == nil && res != nil && len(res.Coordinates) >= 2 {
+						pCoords = res.Coordinates
+					}
+				}
+				if len(pCoords) < 2 {
+					pCoords = generateDenseClosedSpline(stopCoordsSlice, 35)
+				}
+			}
+		}
+
+		var aCoords [][]float64
+		if len(existingAlternate) > 0 {
+			_ = json.Unmarshal(existingAlternate, &aCoords)
+		}
+
+		if len(aCoords) < 2 && len(pCoords) >= 2 {
+			aCoords = make([][]float64, len(pCoords))
+			for i, pt := range pCoords {
+				lat := pt[0]
+				lng := pt[1]
+				t := float64(i) / float64(len(pCoords))
+				if t > 0.25 && t < 0.75 {
+					arcFactor := math.Sin((t - 0.25) / 0.5 * math.Pi)
+					lat += 0.0035 * arcFactor
+					lng += 0.0035 * arcFactor
+				}
+				aCoords[i] = []float64{lat, lng}
+			}
+		}
+
+		if len(pCoords) >= 2 {
+			pBytes, _ := json.Marshal(pCoords)
+			aBytes, _ := json.Marshal(aCoords)
+			_, _ = s.pool.Pool.Exec(ctx, `UPDATE routes SET primary_polyline = $1, alternate_polyline = $2 WHERE id = $3`, pBytes, aBytes, r.id)
+		}
+	}
+
+	bRows, err := s.pool.Pool.Query(ctx, `
+		SELECT b.id, b.tenant_id, b.route_id, b.route_variant, b.route_progress, r.primary_polyline, r.alternate_polyline
+		FROM buses b
+		JOIN routes r ON r.id = b.route_id
+	`)
+	if err == nil {
+		type busInit struct {
+			id           string
+			tenantID     string
+			routeID      string
+			routeVariant string
+			progress     float64
+			primary      []byte
+			alternate    []byte
+		}
+		var busesToInit []busInit
+		for bRows.Next() {
+			var bi busInit
+			if err := bRows.Scan(&bi.id, &bi.tenantID, &bi.routeID, &bi.routeVariant, &bi.progress, &bi.primary, &bi.alternate); err == nil {
+				busesToInit = append(busesToInit, bi)
+			}
+		}
+		bRows.Close()
+
+		for _, bi := range busesToInit {
+			var poly [][]float64
+			if bi.routeVariant == "ALTERNATE_ROUTE_2" && len(bi.alternate) > 0 {
+				_ = json.Unmarshal(bi.alternate, &poly)
+			}
+			if len(poly) < 2 && len(bi.primary) > 0 {
+				_ = json.Unmarshal(bi.primary, &poly)
+			}
+			if len(poly) >= 2 {
+				sampler := NewPolylineSampler(poly)
+				lat, lng, heading := sampler.Sample(bi.progress)
+				seq := int(bi.progress/0.20) + 1
+				if seq > 5 {
+					seq = 5
+				}
+				progPct := math.Round(bi.progress * 1000.0) / 10.0
+
+				_, _ = s.pool.Pool.Exec(ctx, `
+					INSERT INTO bus_telemetry (
+						recorded_at, tenant_id, bus_id, route_id, latitude, longitude, location, speed_kmh, heading_deg, occupancy, trip_status, progress_pct
+					) VALUES (
+						NOW(), $1, $2, $3, $4, $5, ST_SetSRID(ST_MakePoint($5, $4), 4326)::geography, 36.0, $6, 24, 'IN_TRANSIT', $7
+					)
+				`, bi.tenantID, bi.id, bi.routeID, lat, lng, heading, progPct)
+
+				_, _ = s.pool.Pool.Exec(ctx, `
+					UPDATE buses
+					SET route_progress = $1, current_stop_sequence = $2, progress_pct = $3, trip_status = 'IN_TRANSIT'
+					WHERE id = $4
+				`, bi.progress, seq, progPct, bi.id)
+			}
+		}
+	}
+
 	return nil
 }
 

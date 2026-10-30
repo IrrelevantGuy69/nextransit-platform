@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import 'leaflet/dist/leaflet.css';
 import L, { type Map as LeafletMap, type LeafletMouseEvent } from 'leaflet';
 import {
@@ -18,12 +18,6 @@ import { LatLngTuple, StudioStop, isValidLatLng } from './types';
 
 export { isValidLatLng };
 
-const BUS_SVG =
-  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 6v6"/><path d="M15 6v6"/><path d="M2 12h19.6"/><path d="M18 18h3s.5-1.7.8-2.8c.1-.4.2-.8.2-1.2 0-.4-.1-.8-.2-1.2l-1.4-5C20.1 6.8 19.1 6 18 6H4a2 2 0 0 0-2 2v10h3"/><circle cx="7" cy="18" r="2"/><path d="M9 18h5"/><circle cx="16" cy="18" r="2"/></svg>';
-
-const CHECK_SVG =
-  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>';
-
 export const ROUTE_PALETTE = ['#162A22', '#1D4ED8', '#7C3AED', '#0F766E', '#C2410C'];
 export const ROUTE_RING_PALETTE = ['#86EFAC', '#93C5FD', '#C4B5FD', '#99F6E4', '#FDBA74'];
 
@@ -36,6 +30,169 @@ const TENANT_CENTERS: Record<string, LatLngTuple> = {
   '66666666-6666-6666-6666-666666666666': [3.05, 101.69],
   '77777777-7777-7777-7777-777777777777': [29.7, 77.0],
 };
+
+const BUS_SVG =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 6v6"/><path d="M15 6v6"/><path d="M2 12h19.6"/><path d="M18 18h3s.5-1.7.8-2.8c.1-.4.2-.8.2-1.2 0-.4-.1-.8-.2-1.2l-1.4-5C20.1 6.8 19.1 6 18 6H4a2 2 0 0 0-2 2v10h3"/><circle cx="7" cy="18" r="2"/><path d="M9 18h5"/><circle cx="16" cy="18" r="2"/></svg>';
+
+const CHECK_SVG =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>';
+
+export function haversineDistanceMeters(
+  lat1: number,
+  lon1: number,
+  lat2: number,
+  lon2: number,
+): number {
+  const R = 6371000;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+export interface ArcLengthTable {
+  coords: LatLngTuple[];
+  cumDist: number[];
+  totalDist: number;
+}
+
+export function buildArcLengthTable(coords: LatLngTuple[]): ArcLengthTable {
+  if (!coords || coords.length === 0) {
+    return { coords: [], cumDist: [], totalDist: 0 };
+  }
+  const cumDist: number[] = [0];
+  let total = 0;
+  for (let i = 1; i < coords.length; i++) {
+    const d = haversineDistanceMeters(
+      coords[i - 1][0],
+      coords[i - 1][1],
+      coords[i][0],
+      coords[i][1],
+    );
+    total += d;
+    cumDist.push(total);
+  }
+  return { coords, cumDist, totalDist: total };
+}
+
+export function sampleArcLength(
+  table: ArcLengthTable,
+  progress: number,
+): { lat: number; lng: number; heading: number } {
+  const { coords, cumDist, totalDist } = table;
+  if (!coords || coords.length === 0) {
+    return { lat: 0, lng: 0, heading: 0 };
+  }
+  if (coords.length === 1 || totalDist <= 0) {
+    return { lat: coords[0][0], lng: coords[0][1], heading: 0 };
+  }
+
+  let p = progress % 1.0;
+  if (p < 0) p += 1.0;
+  const targetDist = p * totalDist;
+
+  let idx = 0;
+  for (let i = 1; i < cumDist.length; i++) {
+    if (cumDist[i] >= targetDist) {
+      idx = i - 1;
+      break;
+    }
+  }
+  if (idx >= coords.length - 1) {
+    idx = coords.length - 2;
+  }
+
+  const p1 = coords[idx];
+  const p2 = coords[idx + 1];
+  const segDist = cumDist[idx + 1] - cumDist[idx];
+  let t = 0;
+  if (segDist > 0.0001) {
+    t = (targetDist - cumDist[idx]) / segDist;
+  }
+  t = Math.max(0, Math.min(1, t));
+
+  const lat = p1[0] + (p2[0] - p1[0]) * t;
+  const lng = p1[1] + (p2[1] - p1[1]) * t;
+
+  let aheadP = (p + 0.004) % 1.0;
+  if (aheadP < 0) aheadP += 1.0;
+  const aheadTarget = aheadP * totalDist;
+  let aheadIdx = 0;
+  for (let i = 1; i < cumDist.length; i++) {
+    if (cumDist[i] >= aheadTarget) {
+      aheadIdx = i - 1;
+      break;
+    }
+  }
+  if (aheadIdx >= coords.length - 1) {
+    aheadIdx = coords.length - 2;
+  }
+  const ap1 = coords[aheadIdx];
+  const ap2 = coords[aheadIdx + 1];
+  const aSegDist = cumDist[aheadIdx + 1] - cumDist[aheadIdx];
+  let at = 0;
+  if (aSegDist > 0.0001) {
+    at = (aheadTarget - cumDist[aheadIdx]) / aSegDist;
+  }
+  at = Math.max(0, Math.min(1, at));
+  const aheadLat = ap1[0] + (ap2[0] - ap1[0]) * at;
+  const aheadLng = ap1[1] + (ap2[1] - ap1[1]) * at;
+
+  const dLng = aheadLng - lng;
+  const dLat = aheadLat - lat;
+  let heading = (Math.atan2(dLng, dLat) * 180) / Math.PI;
+  if (heading < 0) heading += 360;
+
+  return { lat, lng, heading };
+}
+
+function generateClosedSpline(points: LatLngTuple[], numSegments: number = 24): LatLngTuple[] {
+  const valid = points.filter((p) => Array.isArray(p) && p.length >= 2 && isValidLatLng(p[0], p[1]));
+  if (valid.length < 2) return valid;
+  const n = valid.length;
+  const result: LatLngTuple[] = [];
+
+  for (let i = 0; i < n; i++) {
+    const p0 = valid[(i - 1 + n) % n];
+    const p1 = valid[i];
+    const p2 = valid[(i + 1) % n];
+    const p3 = valid[(i + 2) % n];
+
+    for (let j = 0; j < numSegments; j++) {
+      const t = j / numSegments;
+      const t2 = t * t;
+      const t3 = t2 * t;
+
+      const lat =
+        0.5 *
+        (2 * p1[0] +
+          (-p0[0] + p2[0]) * t +
+          (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2 +
+          (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3);
+      const lng =
+        0.5 *
+        (2 * p1[1] +
+          (-p0[1] + p2[1]) * t +
+          (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2 +
+          (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3);
+
+      if (isValidLatLng(lat, lng)) {
+        result.push([lat, lng]);
+      }
+    }
+  }
+
+  if (result.length > 0) {
+    result.push([result[0][0], result[0][1]]);
+  }
+  return result;
+}
 
 const osrmGeometryCache = new Map<string, LatLngTuple[]>();
 
@@ -67,67 +224,25 @@ async function fetchOsrmGeometry(points: LatLngTuple[]): Promise<LatLngTuple[] |
   return null;
 }
 
-function getSplinePoints(points: LatLngTuple[], numSegments: number = 8): LatLngTuple[] {
-  const validPoints = (points || []).filter(
-    (p) => Array.isArray(p) && p.length >= 2 && isValidLatLng(p[0], p[1]),
-  );
-  if (validPoints.length < 3) return validPoints;
-  const result: LatLngTuple[] = [];
-  const pts: LatLngTuple[] = [validPoints[0], ...validPoints, validPoints[validPoints.length - 1]];
-  for (let i = 1; i < pts.length - 2; i++) {
-    const p0 = pts[i - 1];
-    const p1 = pts[i];
-    const p2 = pts[i + 1];
-    const p3 = pts[i + 2];
-    for (let j = 0; j < numSegments; j++) {
-      const t = j / numSegments;
-      const t2 = t * t;
-      const t3 = t2 * t;
-      const lat =
-        0.5 *
-        (2 * p1[0] +
-          (-p0[0] + p2[0]) * t +
-          (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2 +
-          (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3);
-      const lng =
-        0.5 *
-        (2 * p1[1] +
-          (-p0[1] + p2[1]) * t +
-          (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2 +
-          (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3);
-      if (isValidLatLng(lat, lng)) {
-        result.push([lat, lng]);
-      }
-    }
-  }
-  const last = validPoints[validPoints.length - 1];
-  if (isValidLatLng(last[0], last[1])) {
-    result.push(last);
-  }
-  return result;
-}
-
-export interface ClusteredBusNode {
-  bus: BusSnapshot;
-  realLat: number;
-  realLng: number;
-  displayLat: number;
-  displayLng: number;
-  isOffset: boolean;
-  labelPositionClass: string;
-  clusterIndex: number;
-  clusterSize: number;
-  routeColor: string;
-}
-
-interface MultiRoutePath {
+export interface RouteGeometryItem {
   route: RouteEntity;
   color: string;
   ringColor: string;
-  rawPoints: LatLngTuple[];
-  splinePoints: LatLngTuple[];
   stops: Stop[];
-  isActive: boolean;
+  primaryCoords: LatLngTuple[];
+  alternateCoords: LatLngTuple[];
+  primaryTable: ArcLengthTable;
+  alternateTable: ArcLengthTable;
+}
+
+interface BusRuntimeState {
+  busId: string;
+  routeKey: string;
+  currentProgress: number;
+  targetProgress: number;
+  speedKmh: number;
+  marker: L.Marker | null;
+  headingEl: HTMLElement | null;
 }
 
 export interface FleetSpatialMapProps {
@@ -149,6 +264,8 @@ export interface FleetSpatialMapProps {
   studioStops?: StudioStop[];
   onMapClick?: (lat: number, lng: number) => void;
   onRemoveStudioStop?: (index: number) => void;
+  followBus?: boolean;
+  isSimulating?: boolean;
 }
 
 function MapClickHandler({
@@ -187,53 +304,18 @@ export default function FleetSpatialMap({
   studioStops = [],
   onMapClick,
   onRemoveStudioStop,
+  followBus = true,
+  isSimulating = true,
 }: FleetSpatialMapProps) {
   const isStudioActive = studioMode || isCreatingRoute;
-  const mapRef = React.useRef<LeafletMap | null>(null);
-  const mapContainerRef = React.useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    const container = mapContainerRef.current;
-    if (!container) return;
-    const observer = new ResizeObserver(() => {
-      if (container.clientWidth > 0 && container.clientHeight > 0 && mapRef.current) {
-        if ('invalidateSize' in mapRef.current) {
-          mapRef.current.invalidateSize();
-        }
-        const candidate = mapRef.current as unknown as Record<string, unknown>;
-        if (typeof candidate.resize === 'function') {
-          (candidate.resize as () => void)();
-        }
-      }
-    });
-    observer.observe(container);
-    return () => observer.disconnect();
-  }, []);
-
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      if (mapRef.current) {
-        if ('invalidateSize' in mapRef.current) {
-          mapRef.current.invalidateSize();
-        }
-        const candidate = mapRef.current as unknown as Record<string, unknown>;
-        if (typeof candidate.resize === 'function') {
-          (candidate.resize as () => void)();
-        }
-      }
-    }, 150);
-    return () => clearTimeout(timer);
-  }, [isStudioActive]);
+  const mapRef = useRef<LeafletMap | null>(null);
+  const mapContainerRef = useRef<HTMLDivElement | null>(null);
+  const busStatesRef = useRef<Map<string, BusRuntimeState>>(new Map());
 
   const safeStops = stops || [];
   const safeRoutes = routes || [];
   const safeSnapshots = snapshots || [];
   const safeEtas = stopETAs || [];
-
-  const selectedBusSnapshot = useMemo(() => {
-    if (!selectedBusId) return null;
-    return safeSnapshots.find((b) => b && b.bus_id === selectedBusId) || null;
-  }, [safeSnapshots, selectedBusId]);
 
   const defaultCenter = useMemo<LatLngTuple>(() => {
     if (TENANT_CENTERS[tenantId] && isValidLatLng(TENANT_CENTERS[tenantId][0], TENANT_CENTERS[tenantId][1])) {
@@ -246,253 +328,198 @@ export default function FleetSpatialMap({
     return [3.1209, 101.6538];
   }, [tenantId, safeStops]);
 
-  const multiRoutePaths = useMemo<MultiRoutePath[]>(() => {
-    if (safeRoutes.length === 0) {
-      const pts = safeStops
-        .filter((s) => s && isValidLatLng(s.latitude, s.longitude))
-        .map((s) => [s.latitude, s.longitude] as LatLngTuple);
-      return [
-        {
-          route: {
-            id: 'fallback-rt',
-            tenant_id: tenantId,
-            code: 'R1',
-            name: 'Campus Corridor',
-            origin: '',
-            destination: '',
-            distance_km: 0,
-            estimated_minutes: 0,
-            active: true,
-            created_at: '',
-          },
-          color: ROUTE_PALETTE[0],
-          ringColor: ROUTE_RING_PALETTE[0],
-          rawPoints: pts,
-          splinePoints: getSplinePoints(pts),
-          stops: safeStops.filter((s) => s && isValidLatLng(s.latitude, s.longitude)),
-          isActive: true,
-        },
-      ];
-    }
-
+  const routeGeometries = useMemo<RouteGeometryItem[]>(() => {
     return safeRoutes.map((rt, idx) => {
       const color = ROUTE_PALETTE[idx % ROUTE_PALETTE.length];
       const ringColor = ROUTE_RING_PALETTE[idx % ROUTE_RING_PALETTE.length];
-      const matchingEtas = safeEtas.filter((e) => e && e.route_id === rt.id);
 
-      let orderedStopsForRoute: Stop[] = [];
+      const matchingEtas = safeEtas.filter((e) => e && e.route_id === rt.id);
+      let orderedStops: Stop[] = [];
       if (matchingEtas.length > 0) {
         const sortedEtas = [...matchingEtas].sort((a, b) => a.stop_sequence - b.stop_sequence);
-        const seenStopIds = new Set<string>();
+        const seen = new Set<string>();
         for (const eta of sortedEtas) {
-          if (!seenStopIds.has(eta.stop_id)) {
-            seenStopIds.add(eta.stop_id);
+          if (!seen.has(eta.stop_id)) {
+            seen.add(eta.stop_id);
             const found = safeStops.find((s) => s.id === eta.stop_id);
             if (found && isValidLatLng(found.latitude, found.longitude)) {
-              orderedStopsForRoute.push(found);
-            } else if (isValidLatLng(eta.stop_latitude, eta.stop_longitude)) {
-              orderedStopsForRoute.push({
-                id: eta.stop_id,
-                tenant_id: tenantId,
-                name: eta.stop_name || 'Stop',
-                code: eta.stop_code || '',
-                latitude: eta.stop_latitude,
-                longitude: eta.stop_longitude,
-                created_at: '',
-              });
+              orderedStops.push(found);
             }
           }
         }
       }
 
-      if (orderedStopsForRoute.length === 0) {
+      if (orderedStops.length === 0) {
         const validStops = safeStops.filter((s) => s && isValidLatLng(s.latitude, s.longitude));
-        const stopsPerRoute = Math.max(1, Math.floor(validStops.length / safeRoutes.length));
-        orderedStopsForRoute = validStops.slice(idx * stopsPerRoute, (idx + 1) * stopsPerRoute);
+        const perRoute = Math.max(1, Math.floor(validStops.length / Math.max(1, safeRoutes.length)));
+        orderedStops = validStops.slice(idx * perRoute, (idx + 1) * perRoute);
       }
 
-      const rawPoints = orderedStopsForRoute
-        .filter((s) => s && isValidLatLng(s.latitude, s.longitude))
-        .map((s) => [s.latitude, s.longitude] as LatLngTuple);
+      const stopTuples = orderedStops.map((s) => [s.latitude, s.longitude] as LatLngTuple);
 
-      const loopPoints = rawPoints.length >= 2 ? [...rawPoints, rawPoints[0]] : rawPoints;
-      const splinePoints = getSplinePoints(loopPoints);
+      let primaryCoords: LatLngTuple[] = [];
+      if (rt.primary_polyline && Array.isArray(rt.primary_polyline) && rt.primary_polyline.length >= 2) {
+        primaryCoords = rt.primary_polyline.filter((pt) => isValidLatLng(pt[0], pt[1])) as LatLngTuple[];
+      }
+      if (primaryCoords.length < 2) {
+        primaryCoords = generateClosedSpline(stopTuples, 25);
+      }
 
-      const isSingleBusMode = !!selectedBusSnapshot;
-      const isActive = isSingleBusMode
-        ? selectedBusSnapshot?.route_id === rt.id
-        : selectedRouteId === 'all' ||
-          selectedRouteId === rt.id ||
-          (activeRoute && activeRoute.id === rt.id);
+      let alternateCoords: LatLngTuple[] = [];
+      if (rt.alternate_polyline && Array.isArray(rt.alternate_polyline) && rt.alternate_polyline.length >= 2) {
+        alternateCoords = rt.alternate_polyline.filter((pt) => isValidLatLng(pt[0], pt[1])) as LatLngTuple[];
+      }
+      if (alternateCoords.length < 2 && primaryCoords.length >= 2) {
+        alternateCoords = primaryCoords.map((pt, i) => {
+          const t = i / primaryCoords.length;
+          if (t > 0.25 && t < 0.75) {
+            const arc = Math.sin(((t - 0.25) / 0.5) * Math.PI);
+            return [pt[0] + 0.0035 * arc, pt[1] + 0.0035 * arc] as LatLngTuple;
+          }
+          return [pt[0], pt[1]] as LatLngTuple;
+        });
+      }
+
+      const primaryTable = buildArcLengthTable(primaryCoords);
+      const alternateTable = buildArcLengthTable(alternateCoords);
 
       return {
         route: rt,
         color,
         ringColor,
-        rawPoints,
-        splinePoints,
-        stops: orderedStopsForRoute,
-        isActive: !!isActive,
+        stops: orderedStops,
+        primaryCoords,
+        alternateCoords,
+        primaryTable,
+        alternateTable,
       };
     });
-  }, [safeRoutes, safeStops, safeEtas, selectedRouteId, activeRoute, tenantId, selectedBusSnapshot]);
+  }, [safeRoutes, safeStops, safeEtas]);
 
-  const activePathPoints = useMemo<LatLngTuple[]>(() => {
-    if (selectedBusSnapshot && selectedBusSnapshot.route_id) {
-      const p = multiRoutePaths.find((m) => m.route.id === selectedBusSnapshot.route_id);
-      if (p && p.rawPoints.length > 0) {
-        const valid = p.rawPoints.filter((pt) => isValidLatLng(pt[0], pt[1]));
-        if (valid.length > 0) return valid;
-      }
+  const arcTables = useMemo(() => {
+    const map = new Map<string, ArcLengthTable>();
+    for (const rg of routeGeometries) {
+      map.set(`${rg.route.id}-pri`, rg.primaryTable);
+      map.set(`${rg.route.id}-alt`, rg.alternateTable);
+      map.set(rg.route.id, rg.primaryTable);
     }
-    if (selectedRouteId !== 'all') {
-      const p = multiRoutePaths.find((m) => m.route.id === selectedRouteId);
-      if (p && p.rawPoints.length > 0) {
-        const valid = p.rawPoints.filter((pt) => isValidLatLng(pt[0], pt[1]));
-        if (valid.length > 0) return valid;
-      }
-    }
-    const allPts: LatLngTuple[] = [];
-    multiRoutePaths.forEach((m) => {
-      const valid = (m.rawPoints || []).filter((pt) => isValidLatLng(pt[0], pt[1]));
-      allPts.push(...valid);
-    });
-    if (allPts.length > 0) return allPts;
-    return safeStops
-      .filter((s) => s && isValidLatLng(s.latitude, s.longitude))
-      .map((s) => [s.latitude, s.longitude] as LatLngTuple);
-  }, [multiRoutePaths, selectedRouteId, safeStops, selectedBusSnapshot]);
-
-  const clusteredBuses = useMemo<ClusteredBusNode[]>(() => {
-    const rawVisible = safeSnapshots.filter((b) => {
-      if (!b || !isValidLatLng(b.latitude, b.longitude)) return false;
-      if (selectedBusId) return b.bus_id === selectedBusId;
-      if (!selectedRouteId || selectedRouteId === 'all') return true;
-      return b.route_id === selectedRouteId;
-    });
-
-    const seenBusIds = new Set<string>();
-    const visibleSnapshots: BusSnapshot[] = [];
-    for (const b of rawVisible) {
-      if (!seenBusIds.has(b.bus_id)) {
-        seenBusIds.add(b.bus_id);
-        visibleSnapshots.push(b);
-      }
-    }
-
-    const THRESHOLD = 0.0010;
-    const clusters: BusSnapshot[][] = [];
-    const assigned = new Set<string>();
-
-    for (let i = 0; i < visibleSnapshots.length; i++) {
-      const b1 = visibleSnapshots[i];
-      if (assigned.has(b1.bus_id)) continue;
-
-      const cluster: BusSnapshot[] = [b1];
-      assigned.add(b1.bus_id);
-
-      for (let j = i + 1; j < visibleSnapshots.length; j++) {
-        const b2 = visibleSnapshots[j];
-        if (assigned.has(b2.bus_id)) continue;
-
-        const dist = Math.hypot(b1.latitude - b2.latitude, b1.longitude - b2.longitude);
-        if (dist < THRESHOLD) {
-          cluster.push(b2);
-          assigned.add(b2.bus_id);
-        }
-      }
-      clusters.push(cluster);
-    }
-
-    const result: ClusteredBusNode[] = [];
-    const labelClasses = [
-      'bus-marker__label--top',
-      'bus-marker__label--bottom-left',
-      'bus-marker__label--bottom-right',
-      'bus-marker__label--top-left',
-      'bus-marker__label--top-right',
-    ];
-
-    for (const cluster of clusters) {
-      if (cluster.length === 1) {
-        const bus = cluster[0];
-        const routeIdx = safeRoutes.findIndex((r) => r.id === bus.route_id);
-        const color = routeIdx >= 0 ? ROUTE_PALETTE[routeIdx % ROUTE_PALETTE.length] : '#162A22';
-        result.push({
-          bus,
-          realLat: bus.latitude,
-          realLng: bus.longitude,
-          displayLat: bus.latitude,
-          displayLng: bus.longitude,
-          isOffset: false,
-          labelPositionClass: '',
-          clusterIndex: 0,
-          clusterSize: 1,
-          routeColor: color,
-        });
-      } else {
-        const size = cluster.length;
-        const centerLat = cluster.reduce((sum, b) => sum + b.latitude, 0) / size;
-        const centerLng = cluster.reduce((sum, b) => sum + b.longitude, 0) / size;
-        const radius = 0.0008;
-
-        cluster.forEach((bus, idx) => {
-          const angle = (idx * 2 * Math.PI) / size;
-          const displayLat = centerLat + Math.cos(angle) * radius;
-          const displayLng = centerLng + Math.sin(angle) * radius;
-          const validDisplay = isValidLatLng(displayLat, displayLng);
-          const routeIdx = safeRoutes.findIndex((r) => r.id === bus.route_id);
-          const color = routeIdx >= 0 ? ROUTE_PALETTE[routeIdx % ROUTE_PALETTE.length] : '#162A22';
-
-          result.push({
-            bus,
-            realLat: bus.latitude,
-            realLng: bus.longitude,
-            displayLat: validDisplay ? displayLat : bus.latitude,
-            displayLng: validDisplay ? displayLng : bus.longitude,
-            isOffset: true,
-            labelPositionClass: labelClasses[idx % labelClasses.length],
-            clusterIndex: idx,
-            clusterSize: size,
-            routeColor: color,
-          });
-        });
-      }
-    }
-
-    return result;
-  }, [safeSnapshots, selectedBusId, selectedRouteId, safeRoutes]);
-
-  const studioSplinePoints = useMemo<LatLngTuple[]>(() => {
-    if (!studioStops || studioStops.length < 2) return [];
-    const raw = studioStops
-      .filter((s) => s && isValidLatLng(s.latitude, s.longitude))
-      .map((s) => [s.latitude, s.longitude] as LatLngTuple);
-    return getSplinePoints(raw);
-  }, [studioStops]);
-
-  const [osrmRoutes, setOsrmRoutes] = useState<Record<string, LatLngTuple[]>>({});
+    return map;
+  }, [routeGeometries]);
 
   useEffect(() => {
-    let active = true;
-    for (const p of multiRoutePaths) {
-      if (p.rawPoints.length >= 2 && !osrmRoutes[p.route.id]) {
-        fetchOsrmGeometry(p.rawPoints).then((geom) => {
-          if (active && geom && geom.length > 0) {
-            setOsrmRoutes((prev: Record<string, LatLngTuple[]>) => ({ ...prev, [p.route.id]: geom }));
-          }
+    for (const bus of safeSnapshots) {
+      if (!bus || !bus.bus_id) continue;
+      const isAlt = bus.route_variant === 'ALTERNATE_ROUTE_2' || bus.is_detour;
+      const routeKey = `${bus.route_id || 'fallback'}-${isAlt ? 'alt' : 'pri'}`;
+      const serverProgress =
+        typeof bus.route_progress === 'number'
+          ? bus.route_progress
+          : (Math.max(0, (bus.current_stop_sequence ?? 1) - 1) * 0.2);
+
+      const existing = busStatesRef.current.get(bus.bus_id);
+      if (existing) {
+        existing.routeKey = routeKey;
+        existing.speedKmh = bus.speed_kmh || 36.0;
+        existing.targetProgress = serverProgress;
+
+        const diff = ((serverProgress - existing.currentProgress + 1.5) % 1.0) - 0.5;
+        if (Math.abs(diff) > 0.12 || !isSimulating) {
+          existing.currentProgress = serverProgress;
+        }
+      } else {
+        busStatesRef.current.set(bus.bus_id, {
+          busId: bus.bus_id,
+          routeKey,
+          currentProgress: serverProgress,
+          targetProgress: serverProgress,
+          speedKmh: bus.speed_kmh || 36.0,
+          marker: null,
+          headingEl: null,
         });
       }
     }
-    return () => {
-      active = false;
+  }, [safeSnapshots, isSimulating]);
+
+  useEffect(() => {
+    let animId: number;
+    let lastTime = performance.now();
+
+    const tick = (now: number) => {
+      const dt = Math.min(0.08, (now - lastTime) / 1000);
+      lastTime = now;
+
+      if (isSimulating) {
+        for (const state of busStatesRef.current.values()) {
+          const table =
+            arcTables.get(state.routeKey) ||
+            arcTables.get(`${state.routeKey.split('-')[0]}-pri`);
+          if (!table || table.totalDist <= 0) continue;
+
+          const nominalSpeedMs = (state.speedKmh || 36.0) / 3.6;
+          const nominalRate = nominalSpeedMs / table.totalDist;
+
+          const error = ((state.targetProgress - state.currentProgress + 1.5) % 1.0) - 0.5;
+          const driftVelocity = error / 2.0;
+
+          const effectiveRate = Math.max(0.0001, nominalRate + driftVelocity);
+          state.currentProgress = (state.currentProgress + effectiveRate * dt) % 1.0;
+          if (state.currentProgress < 0) state.currentProgress += 1.0;
+
+          const sampled = sampleArcLength(table, state.currentProgress);
+          if (isValidLatLng(sampled.lat, sampled.lng) && state.marker) {
+            state.marker.setLatLng([sampled.lat, sampled.lng]);
+            if (state.headingEl) {
+              state.headingEl.style.transform = `rotate(${Math.round(sampled.heading)}deg)`;
+            }
+
+            if (followBus && selectedBusId === state.busId && mapRef.current) {
+              mapRef.current.panTo([sampled.lat, sampled.lng], { animate: false });
+            }
+          }
+        }
+      } else {
+        for (const state of busStatesRef.current.values()) {
+          const table =
+            arcTables.get(state.routeKey) ||
+            arcTables.get(`${state.routeKey.split('-')[0]}-pri`);
+          if (!table || table.totalDist <= 0) continue;
+          const sampled = sampleArcLength(table, state.currentProgress);
+          if (isValidLatLng(sampled.lat, sampled.lng) && state.marker) {
+            state.marker.setLatLng([sampled.lat, sampled.lng]);
+            if (state.headingEl) {
+              state.headingEl.style.transform = `rotate(${Math.round(sampled.heading)}deg)`;
+            }
+          }
+        }
+      }
+
+      animId = requestAnimationFrame(tick);
     };
-  }, [multiRoutePaths, osrmRoutes]);
+
+    animId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(animId);
+  }, [isSimulating, followBus, selectedBusId, arcTables]);
+
+  const visibleGeometries = useMemo(() => {
+    if (selectedRouteId === 'all') return routeGeometries;
+    return routeGeometries.filter((rg) => rg.route.id === selectedRouteId);
+  }, [routeGeometries, selectedRouteId]);
+
+  const visibleBuses = useMemo(() => {
+    return safeSnapshots.filter((bus) => {
+      if (!bus || !bus.bus_id) return false;
+      if (selectedBusId) return bus.bus_id === selectedBusId;
+      if (selectedRouteId === 'all') return true;
+      return bus.route_id === selectedRouteId;
+    });
+  }, [safeSnapshots, selectedBusId, selectedRouteId]);
 
   return (
     <div
       ref={mapContainerRef}
-      className={`w-full min-h-[560px] h-[560px] relative rounded-[28px] overflow-hidden bg-muted ${isStudioActive ? 'cursor-crosshair' : ''}`}
+      className={`w-full min-h-[560px] h-[560px] relative rounded-[28px] overflow-hidden bg-muted ${
+        isStudioActive ? 'cursor-crosshair' : ''
+      }`}
     >
       <MapContainer
         center={defaultCenter}
@@ -523,87 +550,52 @@ export default function FleetSpatialMap({
 
         <FocusController
           focusKey={focusKey}
-          routePath={activePathPoints}
           center={defaultCenter}
-          activeSnapshot={selectedBusSnapshot || activeSnapshot}
-          isStudioActive={isStudioActive}
+          selectedBusId={selectedBusId}
+          selectedRouteId={selectedRouteId}
+          routeGeometries={routeGeometries}
         />
 
         {showRoutes &&
-          (multiRoutePaths || []).map((rp) => {
-            const linePoints = osrmRoutes[rp.route.id] || rp.splinePoints;
-            const validPositions = (linePoints || []).filter(
-              (p: LatLngTuple) => Array.isArray(p) && p.length >= 2 && isValidLatLng(p[0], p[1]),
+          visibleGeometries.map((rg) => {
+            const hasAlternateBus = safeSnapshots.some(
+              (b) =>
+                b &&
+                b.route_id === rg.route.id &&
+                (b.route_variant === 'ALTERNATE_ROUTE_2' || b.is_detour),
             );
-            if (!rp.isActive || validPositions.length < 2) return null;
+
             return (
-              <Polyline
-                key={`route-polyline-${rp.route.id}`}
-                positions={validPositions}
-                pathOptions={{
-                  color: rp.color,
-                  weight: rp.isActive ? 4.5 : 2,
-                  opacity: rp.isActive ? 0.95 : 0.25,
-                  lineJoin: 'round',
-                  lineCap: 'round',
-                }}
-                interactive={false}
-              />
-            );
-          })}
+              <React.Fragment key={`corridor-geom-${rg.route.id}`}>
+                <Polyline
+                  positions={rg.primaryCoords}
+                  pathOptions={{
+                    color: '#000000',
+                    weight: 6,
+                    opacity: 0.35,
+                    lineJoin: 'round',
+                    lineCap: 'round',
+                  }}
+                  interactive={false}
+                />
+                <Polyline
+                  positions={rg.primaryCoords}
+                  pathOptions={{
+                    color: rg.color,
+                    weight: 4,
+                    opacity: 0.95,
+                    lineJoin: 'round',
+                    lineCap: 'round',
+                  }}
+                  interactive={false}
+                />
 
-        {showRoutes &&
-          (snapshots || [])
-            .filter((b) => b && (b.route_variant === 'ALTERNATE_ROUTE_2' || b.is_detour) && isValidLatLng(b.latitude, b.longitude))
-            .map((bus) => {
-              const matchedRoute = multiRoutePaths.find((r) => r.route.id === bus.route_id) || multiRoutePaths[0];
-              const routeStops = (matchedRoute?.stops || []).filter((s) => s && isValidLatLng(s.latitude, s.longitude));
-              const alternatePoints: LatLngTuple[] = [];
-              if (routeStops.length >= 2) {
-                for (let i = 0; i < routeStops.length - 1; i++) {
-                  const s1 = routeStops[i];
-                  const s2 = routeStops[i + 1];
-                  alternatePoints.push([s1.latitude, s1.longitude]);
-                  const dLat = s2.latitude - s1.latitude;
-                  const dLng = s2.longitude - s1.longitude;
-                  const len = Math.hypot(dLat, dLng);
-                  if (len > 0.0001) {
-                    const uLat = -dLng / len;
-                    const uLng = dLat / len;
-                    const offset = 0.0035;
-                    const midLat = (s1.latitude + s2.latitude) / 2 + uLat * offset;
-                    const midLng = (s1.longitude + s2.longitude) / 2 + uLng * offset;
-                    if (isValidLatLng(midLat, midLng)) {
-                      alternatePoints.push([midLat, midLng]);
-                    }
-                  }
-                }
-                const lastStop = routeStops[routeStops.length - 1];
-                alternatePoints.push([lastStop.latitude, lastStop.longitude]);
-              }
-              const validBusCoords = isValidLatLng(bus.latitude, bus.longitude);
-              const fallbackPoints: LatLngTuple[] = validBusCoords
-                ? [
-                    [bus.latitude, bus.longitude],
-                    [bus.latitude + 0.003, bus.longitude + 0.003],
-                  ]
-                : [];
-              const alternateSpline = getSplinePoints(
-                alternatePoints.length > 2 ? alternatePoints : fallbackPoints,
-              );
-              if (alternateSpline.length < 2) return null;
-              const delayDisplay = (bus.delay_minutes ?? ((bus.detour_delay_sec || 210) / 60)).toFixed(1);
-              const midWaypoint =
-                alternateSpline[Math.floor(alternateSpline.length / 2)] || (validBusCoords ? [bus.latitude, bus.longitude] : null);
-              if (!midWaypoint || !isValidLatLng(midWaypoint[0], midWaypoint[1])) return null;
-
-              return (
-                <React.Fragment key={`bus-route2-${bus.bus_id}`}>
+                {hasAlternateBus && rg.alternateCoords.length >= 2 && (
                   <Polyline
-                    positions={alternateSpline}
+                    positions={rg.alternateCoords}
                     pathOptions={{
                       color: '#D97706',
-                      weight: 4,
+                      weight: 3.5,
                       dashArray: '8, 8',
                       opacity: 0.95,
                       lineJoin: 'round',
@@ -611,58 +603,58 @@ export default function FleetSpatialMap({
                     }}
                     interactive={false}
                   />
-                  <CircleMarker
-                    center={midWaypoint}
-                    radius={6}
-                    pathOptions={{
-                      color: '#D97706',
-                      fillColor: '#FDE68A',
-                      fillOpacity: 1,
-                      weight: 2,
-                    }}
-                  >
-                    <Tooltip direction="top" offset={[0, -6]} permanent>
-                      <div className="text-center font-sans">
-                        <p className="font-semibold text-xs leading-tight text-amber-900">Route 2 · Alternate Path</p>
-                        <p className="text-[10px] text-amber-700 font-medium">+{delayDisplay} min delay</p>
-                      </div>
-                    </Tooltip>
-                  </CircleMarker>
-                </React.Fragment>
-              );
-            })}
+                )}
+              </React.Fragment>
+            );
+          })}
 
         {showRoutes &&
-          (multiRoutePaths || []).map((rp) => {
-            if (!rp.isActive) return null;
-            return (rp.stops || []).map((stop, sIdx) => {
+          visibleGeometries.map((rg) => {
+            return rg.stops.map((stop, sIdx) => {
               if (!stop || !isValidLatLng(stop.latitude, stop.longitude)) return null;
               const isStopActive = activeSnapshot?.current_stop_sequence === sIdx + 1;
-              const stopEta = safeEtas.find(
-                (e) => e.stop_id === stop.id && (selectedRouteId === 'all' || e.route_id === selectedRouteId),
-              );
+              const eta = safeEtas.find((e) => e && e.stop_id === stop.id);
+
               return (
                 <CircleMarker
-                  key={`stop-marker-${rp.route.id}-${stop.id}-${sIdx}`}
+                  key={`stop-${rg.route.id}-${stop.id}`}
                   center={[stop.latitude, stop.longitude]}
-                  radius={isStopActive ? 7 : 5.5}
+                  radius={isStopActive ? 8 : 6}
                   pathOptions={{
-                    fillColor: isStopActive ? '#162A22' : '#ffffff',
-                    color: rp.color,
+                    fillColor: isStopActive ? rg.color : '#FFFFFF',
+                    color: rg.color,
                     weight: 2.5,
                     fillOpacity: 1,
                   }}
+                  eventHandlers={{
+                    click: () => {
+                      if (mapRef.current) {
+                        mapRef.current.flyTo([stop.latitude, stop.longitude], 16, { duration: 0.8 });
+                      }
+                    },
+                  }}
                 >
-                  <Tooltip direction="top" offset={[0, -6]}>
-                    <div className="text-center font-sans">
-                      <p className="font-semibold text-xs leading-tight text-neutral-900">{stop.name}</p>
-                      <p className="text-[10px] text-neutral-500 font-medium">
-                        {stop.code} · {rp.route.code}
+                  <Tooltip direction="top" offset={[0, -8]} opacity={1}>
+                    <div className="p-2.5 font-sans bg-white/95 backdrop-blur-md rounded-xl border border-black/10 shadow-lg text-left min-w-[150px]">
+                      <div className="flex items-center gap-1.5 mb-1">
+                        <span className="size-2 rounded-full" style={{ backgroundColor: rg.color }} />
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-black/50">
+                          Stop #{sIdx + 1}
+                        </span>
+                      </div>
+                      <p className="text-xs font-semibold text-[#162A22] leading-tight">
+                        {stop.name}
                       </p>
-                      {stopEta && (
-                        <p className="text-[10px] font-semibold text-[#162A22] mt-0.5">
-                          {stopEta.eta_minutes <= 0 ? 'Due now' : `${Math.round(stopEta.eta_minutes)} min away`}
-                        </p>
+                      <p className="text-[10px] text-black/50 font-medium mt-0.5">
+                        {stop.code} · {rg.route.code}
+                      </p>
+                      {eta && (
+                        <div className="mt-1.5 pt-1.5 border-t border-black/5 flex items-center justify-between">
+                          <span className="text-[10px] text-black/50">Arrival:</span>
+                          <span className="text-[11px] font-bold text-[#162A22]">
+                            {eta.eta_minutes <= 0.5 ? 'Arriving now' : `~${Math.round(eta.eta_minutes)} min`}
+                          </span>
+                        </div>
                       )}
                     </div>
                   </Tooltip>
@@ -671,311 +663,140 @@ export default function FleetSpatialMap({
             });
           })}
 
-        {studioMode && studioSplinePoints.length >= 2 && (
-          <Polyline
-            positions={studioSplinePoints}
-            pathOptions={{
-              color: '#4F46E5',
-              weight: 4,
-              dashArray: '6, 6',
-              opacity: 0.9,
-              lineJoin: 'round',
-              lineCap: 'round',
-            }}
-            interactive={false}
-          />
-        )}
+        {visibleBuses.map((bus) => {
+          const matchedRg =
+            routeGeometries.find((r) => r.route.id === bus.route_id) || routeGeometries[0];
+          const color = matchedRg ? matchedRg.color : ROUTE_PALETTE[0];
+          const isSelected = bus.bus_id === selectedBusId;
+          const isCompleted =
+            bus.bus_status === 'COMPLETED' || bus.trip_status === 'JOURNEY_ENDED';
+          const isDelayed =
+            (bus.delay_minutes !== undefined && bus.delay_minutes > 0) ||
+            bus.route_variant === 'ALTERNATE_ROUTE_2' ||
+            bus.is_detour;
 
-        {studioMode &&
-          studioStops.map((st, idx) => {
-            if (!st || !isValidLatLng(st.latitude, st.longitude)) return null;
-            const isOrigin = idx === 0;
-            const isDest = idx === studioStops.length - 1 && studioStops.length > 1;
-            const pinColor = isOrigin ? '#059669' : isDest ? '#D97706' : '#4F46E5';
-            const pinLabel = isOrigin ? '1 (Origin)' : isDest ? `${idx + 1} (Dest)` : `${idx + 1}`;
+          const headingAngle = Math.round(bus.heading_deg ?? 0);
+          const pos: LatLngTuple = isValidLatLng(bus.latitude, bus.longitude)
+            ? [bus.latitude, bus.longitude]
+            : defaultCenter;
 
-            const icon = L.divIcon({
-              className: '',
-              html: `<div style="background-color:${pinColor}; color:#ffffff; font-family:var(--font-sans, sans-serif); font-weight:700; font-size:11px; padding:3px 8px; border-radius:9999px; box-shadow:0 4px 10px rgba(0,0,0,0.18); border:2px solid #ffffff; white-space:nowrap; display:flex; align-items:center; gap:3px;">${pinLabel}</div>`,
-              iconSize: [60, 24],
-              iconAnchor: [30, 12],
-            });
+          const iconHtml = `
+            <div class="bus-marker ${isSelected ? 'bus-marker--selected' : ''} ${
+            isDelayed ? 'bus-marker--delayed' : ''
+          } ${isCompleted ? 'bus-marker--completed' : ''}" style="${
+            !isSelected && !isCompleted && !isDelayed ? `background-color: ${color};` : ''
+          }">
+              <span class="bus-marker__heading" style="transform: rotate(${headingAngle}deg);"></span>
+              ${isCompleted ? CHECK_SVG : BUS_SVG}
+              <span class="bus-marker__label">${bus.fleet_code}</span>
+            </div>
+          `;
 
-            return (
-              <Marker
-                key={`studio-stop-${st.id}-${idx}`}
-                position={[st.latitude, st.longitude]}
-                icon={icon}
-                eventHandlers={{
-                  click: () => onRemoveStudioStop && onRemoveStudioStop(idx),
-                }}
-                title={`${st.name} (Click to remove waypoint)`}
-              >
-                <Tooltip direction="top" offset={[0, -12]}>
-                  <div className="text-center font-sans">
-                    <p className="font-semibold text-xs text-neutral-900">{st.name}</p>
-                    <p className="text-[10px] text-neutral-500 font-medium">Click pin to remove from corridor</p>
-                  </div>
-                </Tooltip>
-              </Marker>
-            );
-          })}
+          const icon = L.divIcon({
+            className: '',
+            html: iconHtml,
+            iconSize: [36, 36],
+            iconAnchor: [18, 18],
+          });
 
-        {clusteredBuses.map((node) => {
-          if (!node.isOffset) return null;
-          if (!isValidLatLng(node.realLat, node.realLng) || !isValidLatLng(node.displayLat, node.displayLng)) return null;
           return (
-            <React.Fragment key={`connector-${node.bus.bus_id}`}>
-              <Polyline
-                positions={[
-                  [node.realLat, node.realLng],
-                  [node.displayLat, node.displayLng],
-                ]}
-                pathOptions={{
-                  color: node.routeColor,
-                  weight: 1.5,
-                  dashArray: '3, 4',
-                  opacity: 0.65,
-                }}
-                interactive={false}
-              />
-              <CircleMarker
-                center={[node.realLat, node.realLng]}
-                radius={3}
-                pathOptions={{
-                  color: node.routeColor,
-                  fillColor: node.routeColor,
-                  fillOpacity: 0.7,
-                  weight: 1,
-                }}
-                interactive={false}
-              />
-            </React.Fragment>
+            <Marker
+              key={`bus-marker-${bus.bus_id}`}
+              position={pos}
+              icon={icon}
+              zIndexOffset={isSelected ? 1000 : 200}
+              ref={(m) => {
+                const st = busStatesRef.current.get(bus.bus_id);
+                if (st) {
+                  st.marker = m;
+                  if (m) {
+                    const el = m.getElement();
+                    if (el) {
+                      st.headingEl = el.querySelector('.bus-marker__heading') as HTMLElement | null;
+                    }
+                  }
+                }
+              }}
+              eventHandlers={{
+                click: () => onSelectBus(bus.bus_id),
+              }}
+            />
           );
         })}
-
-        {clusteredBuses.map((node) => (
-          <BusMarkerNode
-            key={`bus-marker-${node.bus.bus_id}`}
-            node={node}
-            selected={node.bus.bus_id === selectedBusId}
-            onSelect={() => onSelectBus(node.bus.bus_id)}
-          />
-        ))}
       </MapContainer>
 
-      {!selectedBusId && multiRoutePaths.length > 0 && !studioMode && (
+      {!selectedBusId && routeGeometries.length > 0 && !studioMode && (
         <div className="absolute bottom-4 right-4 z-[500] pointer-events-auto bg-white/95 backdrop-blur-md px-4 py-3 rounded-2xl border border-black/10 shadow-lg font-sans flex flex-col gap-1.5">
-          <span className="text-[10px] uppercase tracking-wider font-bold text-neutral-400">Campus Corridors</span>
+          <span className="text-[10px] uppercase tracking-wider font-bold text-neutral-400">
+            Active Corridors ({routeGeometries.length})
+          </span>
           <div className="flex flex-col gap-1">
-            {multiRoutePaths.map((rp) => (
-              <div key={`legend-${rp.route.id}`} className="flex items-center gap-2 text-xs font-medium text-neutral-800">
-                <span className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: rp.color }} />
-                <span className="truncate max-w-[150px]">{rp.route.code}</span>
+            {routeGeometries.map((rg) => (
+              <div
+                key={`legend-${rg.route.id}`}
+                className="flex items-center gap-2 text-xs font-medium text-neutral-800"
+              >
+                <span
+                  className="w-3 h-3 rounded-full shrink-0"
+                  style={{ backgroundColor: rg.color }}
+                />
+                <span className="truncate max-w-[150px]">{rg.route.code} · {rg.route.name}</span>
               </div>
             ))}
           </div>
-        </div>
-      )}
-
-      {studioMode && (
-        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[600] pointer-events-auto bg-[#162A22] text-white px-5 py-2.5 rounded-full shadow-lg border border-white/20 font-sans text-xs font-medium flex items-center gap-2.5">
-          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-          <span>Interactive Studio Active · Click anywhere on the map to add ordered waypoints</span>
         </div>
       )}
     </div>
   );
 }
 
-interface BusMarkerNodeProps {
-  node: ClusteredBusNode;
-  selected: boolean;
-  onSelect: () => void;
-}
-
-function BusMarkerNode({ node, selected, onSelect }: BusMarkerNodeProps) {
-  const { bus, displayLat, displayLng, labelPositionClass, routeColor } = node;
-  const isValidPos = isValidLatLng(displayLat, displayLng);
-  const markerRef = React.useRef<L.Marker | null>(null);
-  const currentPos = React.useRef<[number, number]>(isValidPos ? [displayLat, displayLng] : [3.1209, 101.6538]);
-  const prevPos = React.useRef<[number, number]>(isValidPos ? [displayLat, displayLng] : [3.1209, 101.6538]);
-  const targetPos = React.useRef<[number, number]>(isValidPos ? [displayLat, displayLng] : [3.1209, 101.6538]);
-  const startTime = React.useRef<number>(performance.now());
-
-  React.useEffect(() => {
-    if (!isValidLatLng(displayLat, displayLng)) return;
-    prevPos.current = currentPos.current;
-    targetPos.current = [displayLat, displayLng];
-    startTime.current = performance.now();
-  }, [displayLat, displayLng]);
-
-  React.useEffect(() => {
-    if (!isValidLatLng(displayLat, displayLng)) return;
-    let animId: number;
-    const animate = () => {
-      const now = performance.now();
-      const elapsed = now - startTime.current;
-      const t = Math.min(1.0, Math.max(0.0, elapsed / 1800));
-      const lat = prevPos.current[0] + (targetPos.current[0] - prevPos.current[0]) * t;
-      const lng = prevPos.current[1] + (targetPos.current[1] - prevPos.current[1]) * t;
-      if (isValidLatLng(lat, lng)) {
-        currentPos.current = [lat, lng];
-        if (markerRef.current) {
-          markerRef.current.setLatLng([lat, lng]);
-        }
-      }
-      if (t < 1.0) {
-        animId = requestAnimationFrame(animate);
-      }
-    };
-    animId = requestAnimationFrame(animate);
-    return () => cancelAnimationFrame(animId);
-  }, [displayLat, displayLng]);
-
-  if (!isValidPos) return null;
-
-  const isCompleted =
-    bus.bus_status === 'COMPLETED' || bus.trip_status === 'JOURNEY_ENDED';
-  const isDelayed = (bus.delay_minutes !== undefined && bus.delay_minutes > 0) || (bus.speed_kmh < 15 && !isCompleted);
-  const roundedHeading = Math.round((bus.heading_deg ?? 0) / 15) * 15;
-
-  const markerIcon = useMemo(() => {
-    const classes = [
-      'bus-marker',
-      isCompleted && 'bus-marker--completed',
-      isDelayed && 'bus-marker--delayed',
-      selected && 'bus-marker--selected',
-    ]
-      .filter(Boolean)
-      .join(' ');
-
-    const headingEl = isCompleted
-      ? ''
-      : `<span class="bus-marker__heading" style="rotate:${roundedHeading}deg"></span>`;
-
-    const labelClass = labelPositionClass ? `bus-marker__label ${labelPositionClass}` : 'bus-marker__label';
-
-    return L.divIcon({
-      className: '',
-      html: `<div class="${classes}" style="${!selected && !isCompleted && !isDelayed ? `background-color:${routeColor};` : ''}">${headingEl}${isCompleted ? CHECK_SVG : BUS_SVG}<span class="${labelClass}">${bus.fleet_code}</span></div>`,
-      iconSize: [36, 36],
-      iconAnchor: [18, 18],
-    });
-  }, [bus.fleet_code, isCompleted, isDelayed, selected, roundedHeading, labelPositionClass, routeColor]);
-
-  return (
-    <Marker
-      ref={markerRef}
-      position={[displayLat, displayLng]}
-      icon={markerIcon}
-      zIndexOffset={selected ? 1000 : isCompleted ? -100 : 100}
-      eventHandlers={{ click: onSelect }}
-      title={`${bus.fleet_code} (${bus.plate_number}) · ${bus.speed_kmh} km/h · ${bus.route_code || ''}`}
-    />
-  );
-}
-
 interface FocusControllerProps {
   focusKey: string;
-  routePath: LatLngTuple[];
   center: LatLngTuple;
-  activeSnapshot: BusSnapshot | null;
-  isStudioActive?: boolean;
+  selectedBusId: string | null;
+  selectedRouteId: string;
+  routeGeometries: RouteGeometryItem[];
 }
 
 function FocusController({
   focusKey,
-  routePath,
   center,
-  activeSnapshot,
-  isStudioActive,
+  selectedBusId,
+  selectedRouteId,
+  routeGeometries,
 }: FocusControllerProps) {
   const map = useMap();
 
   useEffect(() => {
-    const handleResize = () => {
-      map.invalidateSize();
-    };
-    window.addEventListener('resize', handleResize);
-    const raf = requestAnimationFrame(() => {
-      map.invalidateSize();
-    });
-    const timer1 = setTimeout(() => {
-      map.invalidateSize();
-    }, 100);
-    const timer2 = setTimeout(() => {
-      map.invalidateSize();
-    }, 250);
-
-    return () => {
-      window.removeEventListener('resize', handleResize);
-      cancelAnimationFrame(raf);
-      clearTimeout(timer1);
-      clearTimeout(timer2);
-    };
-  }, [map, isStudioActive]);
-
-  useEffect(() => {
     map.invalidateSize();
-    if (routePath && routePath.length > 0) {
-      const validPoints = routePath.filter(
-        (p) => Array.isArray(p) && p.length >= 2 && isValidLatLng(p[0], p[1]),
-      );
-      if (validPoints.length === 1) {
-        map.setView([validPoints[0][0], validPoints[0][1]], 15, { animate: true });
-        return;
-      }
-      if (validPoints.length > 1) {
-        try {
-          const latLngs = validPoints.map((p) => L.latLng(p[0], p[1]));
-          const bounds = L.latLngBounds(latLngs);
-          if (bounds.isValid()) {
-            const sw = bounds.getSouthWest();
-            const ne = bounds.getNorthEast();
-            if (isValidLatLng(sw.lat, sw.lng) && isValidLatLng(ne.lat, ne.lng)) {
-              if (Math.abs(sw.lat - ne.lat) < 0.00001 && Math.abs(sw.lng - ne.lng) < 0.00001) {
-                map.setView([sw.lat, sw.lng], 15, { animate: true });
-                return;
-              }
-              const padded = bounds.pad(0.18);
-              if (padded.isValid()) {
-                const psw = padded.getSouthWest();
-                const pne = padded.getNorthEast();
-                if (isValidLatLng(psw.lat, psw.lng) && isValidLatLng(pne.lat, pne.lng)) {
-                  map.flyToBounds(padded, {
-                    duration: 0.8,
-                    maxZoom: 16,
-                  });
-                  return;
-                }
-              }
-              map.flyToBounds(bounds, {
-                duration: 0.8,
-                maxZoom: 16,
-              });
-              return;
-            }
-          }
-        } catch {
-          if (validPoints.length > 0) {
-            map.setView([validPoints[0][0], validPoints[0][1]], 15, { animate: true });
-            return;
-          }
+
+    if (selectedRouteId !== 'all') {
+      const match = routeGeometries.find((r) => r.route.id === selectedRouteId);
+      if (match && match.primaryCoords.length > 0) {
+        const bounds = L.latLngBounds(match.primaryCoords.map((p) => L.latLng(p[0], p[1])));
+        if (bounds.isValid()) {
+          map.flyToBounds(bounds.pad(0.15), { duration: 0.8, maxZoom: 16 });
+          return;
         }
       }
     }
 
-    if (Array.isArray(center) && center.length >= 2 && isValidLatLng(center[0], center[1])) {
+    if (routeGeometries.length > 0) {
+      const allPoints: LatLngTuple[] = [];
+      routeGeometries.forEach((rg) => allPoints.push(...rg.primaryCoords));
+      if (allPoints.length > 0) {
+        const bounds = L.latLngBounds(allPoints.map((p) => L.latLng(p[0], p[1])));
+        if (bounds.isValid()) {
+          map.flyToBounds(bounds.pad(0.12), { duration: 0.8, maxZoom: 16 });
+          return;
+        }
+      }
+    }
+
+    if (isValidLatLng(center[0], center[1])) {
       map.setView(center, 14, { animate: true });
     }
-  }, [focusKey, map, center, routePath]);
-
-  useEffect(() => {
-    if (activeSnapshot && isValidLatLng(activeSnapshot.latitude, activeSnapshot.longitude)) {
-      map.panTo([activeSnapshot.latitude, activeSnapshot.longitude], { animate: true, duration: 0.6 });
-    }
-  }, [activeSnapshot?.bus_id, map]);
+  }, [focusKey, map, center, selectedRouteId, routeGeometries]);
 
   return null;
 }
