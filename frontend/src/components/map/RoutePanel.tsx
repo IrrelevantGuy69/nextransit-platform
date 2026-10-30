@@ -154,12 +154,10 @@ export function RoutePanel({
     Math.max(0, Math.round(activeBus?.progress_pct ?? 0)),
   );
   const isDelayed =
-    (activeBus?.delay_minutes !== undefined && activeBus.delay_minutes > 0) ||
+    (activeBus?.delay_minutes !== undefined && activeBus.delay_minutes > 0.1) ||
     activeBus?.route_variant === 'ALTERNATE_ROUTE_2' ||
     activeBus?.is_detour;
-  const delayDisplay = activeBus?.delay_minutes
-    ? `+${activeBus.delay_minutes.toFixed(1)}m traffic delay`
-    : '+3.8m traffic delay';
+  const delayDisplay = `+${(activeBus?.delay_minutes || 0).toFixed(1)}m traffic delay`;
 
   return (
     <section
@@ -331,7 +329,9 @@ export function RoutePanel({
                     {countdownText}
                   </span>
                   {isUpcoming && isDelayed && (
-                    <div className="text-[9px] font-bold text-amber-700 mt-0.5">+3.8m delay</div>
+                    <div className="text-[9px] font-bold text-amber-700 mt-0.5">
+                      +{((st.etaMinutes > 0 ? activeBus?.delay_minutes : 0) || 0).toFixed(1)}m delay
+                    </div>
                   )}
                 </div>
               </div>

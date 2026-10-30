@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import 'leaflet/dist/leaflet.css';
 import L, { type Map as LeafletMap, type LeafletMouseEvent } from 'leaflet';
 import {
@@ -194,36 +194,6 @@ function generateClosedSpline(points: LatLngTuple[], numSegments: number = 24): 
   return result;
 }
 
-const osrmGeometryCache = new Map<string, LatLngTuple[]>();
-
-async function fetchOsrmGeometry(points: LatLngTuple[]): Promise<LatLngTuple[] | null> {
-  if (points.length < 2) return null;
-  const loopPoints = [...points, points[0]];
-  const coordsKey = loopPoints.map((p) => `${p[1].toFixed(5)},${p[0].toFixed(5)}`).join(';');
-  const cached = osrmGeometryCache.get(coordsKey);
-  if (cached) return cached;
-
-  try {
-    const url = `https://router.project-osrm.org/route/v1/driving/${coordsKey}?overview=full&geometries=geojson`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(4500) });
-    if (!res.ok) return null;
-    const data = (await res.json()) as { routes?: Array<{ geometry?: { coordinates?: [number, number][] } }> };
-    const rawCoords = data.routes?.[0]?.geometry?.coordinates;
-    if (rawCoords && Array.isArray(rawCoords) && rawCoords.length > 0) {
-      const leafletCoords: LatLngTuple[] = rawCoords
-        .filter((c) => Array.isArray(c) && c.length >= 2 && isValidLatLng(c[1], c[0]))
-        .map((c) => [c[1], c[0]] as LatLngTuple);
-      if (leafletCoords.length > 0) {
-        osrmGeometryCache.set(coordsKey, leafletCoords);
-        return leafletCoords;
-      }
-    }
-  } catch {
-    return null;
-  }
-  return null;
-}
-
 export interface RouteGeometryItem {
   route: RouteEntity;
   color: string;
@@ -233,16 +203,6 @@ export interface RouteGeometryItem {
   alternateCoords: LatLngTuple[];
   primaryTable: ArcLengthTable;
   alternateTable: ArcLengthTable;
-}
-
-interface BusRuntimeState {
-  busId: string;
-  routeKey: string;
-  currentProgress: number;
-  targetProgress: number;
-  speedKmh: number;
-  marker: L.Marker | null;
-  headingEl: HTMLElement | null;
 }
 
 export interface FleetSpatialMapProps {
@@ -262,6 +222,7 @@ export interface FleetSpatialMapProps {
   studioMode?: boolean;
   isCreatingRoute?: boolean;
   studioStops?: StudioStop[];
+  studioPolyline?: [number, number][];
   onMapClick?: (lat: number, lng: number) => void;
   onRemoveStudioStop?: (index: number) => void;
   followBus?: boolean;
@@ -302,6 +263,7 @@ export default function FleetSpatialMap({
   studioMode = false,
   isCreatingRoute = false,
   studioStops = [],
+  studioPolyline = [],
   onMapClick,
   onRemoveStudioStop,
   followBus = true,
@@ -310,7 +272,11 @@ export default function FleetSpatialMap({
   const isStudioActive = studioMode || isCreatingRoute;
   const mapRef = useRef<LeafletMap | null>(null);
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
-  const busStatesRef = useRef<Map<string, BusRuntimeState>>(new Map());
+
+  const busProgressRef = useRef<Record<string, number>>({});
+  const initialPositionsRef = useRef<Record<string, LatLngTuple>>({});
+  const markerInstancesRef = useRef<Record<string, L.Marker | null>>({});
+  const headingElementsRef = useRef<Record<string, HTMLElement | null>>({});
 
   const safeStops = stops || [];
   const safeRoutes = routes || [];
@@ -407,90 +373,74 @@ export default function FleetSpatialMap({
   }, [routeGeometries]);
 
   useEffect(() => {
-    for (const bus of safeSnapshots) {
-      if (!bus || !bus.bus_id) continue;
-      const isAlt = bus.route_variant === 'ALTERNATE_ROUTE_2' || bus.is_detour;
-      const routeKey = `${bus.route_id || 'fallback'}-${isAlt ? 'alt' : 'pri'}`;
-      const serverProgress =
-        typeof bus.route_progress === 'number'
-          ? bus.route_progress
-          : (Math.max(0, (bus.current_stop_sequence ?? 1) - 1) * 0.2);
-
-      const existing = busStatesRef.current.get(bus.bus_id);
-      if (existing) {
-        existing.routeKey = routeKey;
-        existing.speedKmh = bus.speed_kmh || 36.0;
-        existing.targetProgress = serverProgress;
-
-        const diff = ((serverProgress - existing.currentProgress + 1.5) % 1.0) - 0.5;
-        if (Math.abs(diff) > 0.12 || !isSimulating) {
-          existing.currentProgress = serverProgress;
+    const STAGGERED = [0.05, 0.25, 0.45, 0.65, 0.82];
+    safeSnapshots.forEach((bus, idx) => {
+      if (!bus || !bus.bus_id) return;
+      if (busProgressRef.current[bus.bus_id] === undefined) {
+        if (typeof bus.route_progress === 'number' && bus.route_progress >= 0 && bus.route_progress <= 1) {
+          busProgressRef.current[bus.bus_id] = bus.route_progress;
+        } else {
+          busProgressRef.current[bus.bus_id] = STAGGERED[idx % STAGGERED.length];
         }
-      } else {
-        busStatesRef.current.set(bus.bus_id, {
-          busId: bus.bus_id,
-          routeKey,
-          currentProgress: serverProgress,
-          targetProgress: serverProgress,
-          speedKmh: bus.speed_kmh || 36.0,
-          marker: null,
-          headingEl: null,
-        });
       }
-    }
-  }, [safeSnapshots, isSimulating]);
+    });
+  }, [safeSnapshots]);
 
   useEffect(() => {
     let animId: number;
     let lastTime = performance.now();
 
     const tick = (now: number) => {
-      const dt = Math.min(0.08, (now - lastTime) / 1000);
+      const dtSeconds = Math.min(0.1, (now - lastTime) / 1000);
       lastTime = now;
 
       if (isSimulating) {
-        for (const state of busStatesRef.current.values()) {
+        safeSnapshots.forEach((bus) => {
+          if (!bus || !bus.bus_id) return;
+          const isAlt = bus.route_variant === 'ALTERNATE_ROUTE_2' || bus.is_detour;
           const table =
-            arcTables.get(state.routeKey) ||
-            arcTables.get(`${state.routeKey.split('-')[0]}-pri`);
-          if (!table || table.totalDist <= 0) continue;
+            arcTables.get(`${bus.route_id || 'fallback'}-${isAlt ? 'alt' : 'pri'}`) ||
+            arcTables.get(`${bus.route_id || 'fallback'}-pri`) ||
+            routeGeometries[0]?.primaryTable;
 
-          const nominalSpeedMs = (state.speedKmh || 36.0) / 3.6;
-          const nominalRate = nominalSpeedMs / table.totalDist;
+          if (!table || table.totalDist <= 0) return;
 
-          const error = ((state.targetProgress - state.currentProgress + 1.5) % 1.0) - 0.5;
-          const driftVelocity = error / 2.0;
+          const routeTotalKm = table.totalDist / 1000.0;
+          const speedKmh = Math.max(12, bus.speed_kmh || 38.0);
+          const currentProg = busProgressRef.current[bus.bus_id] ?? 0.05;
+          const nextProg = (currentProg + (speedKmh / 3600.0) * dtSeconds / routeTotalKm) % 1.0;
+          busProgressRef.current[bus.bus_id] = nextProg >= 0 ? nextProg : nextProg + 1.0;
 
-          const effectiveRate = Math.max(0.0001, nominalRate + driftVelocity);
-          state.currentProgress = (state.currentProgress + effectiveRate * dt) % 1.0;
-          if (state.currentProgress < 0) state.currentProgress += 1.0;
-
-          const sampled = sampleArcLength(table, state.currentProgress);
-          if (isValidLatLng(sampled.lat, sampled.lng) && state.marker) {
-            state.marker.setLatLng([sampled.lat, sampled.lng]);
-            if (state.headingEl) {
-              state.headingEl.style.transform = `rotate(${Math.round(sampled.heading)}deg)`;
-            }
-
-            if (followBus && selectedBusId === state.busId && mapRef.current) {
-              mapRef.current.panTo([sampled.lat, sampled.lng], { animate: false });
-            }
+          const sampled = sampleArcLength(table, busProgressRef.current[bus.bus_id]);
+          const marker = markerInstancesRef.current[bus.bus_id];
+          if (marker && isValidLatLng(sampled.lat, sampled.lng)) {
+            marker.setLatLng([sampled.lat, sampled.lng]);
           }
-        }
+
+          const headingEl = headingElementsRef.current[bus.bus_id];
+          if (headingEl) {
+            headingEl.style.transform = `rotate(${Math.round(sampled.heading)}deg)`;
+          }
+
+          if (followBus && selectedBusId === bus.bus_id && mapRef.current && isValidLatLng(sampled.lat, sampled.lng)) {
+            mapRef.current.panTo([sampled.lat, sampled.lng], { animate: false });
+          }
+        });
       } else {
-        for (const state of busStatesRef.current.values()) {
+        safeSnapshots.forEach((bus) => {
+          if (!bus || !bus.bus_id) return;
+          const isAlt = bus.route_variant === 'ALTERNATE_ROUTE_2' || bus.is_detour;
           const table =
-            arcTables.get(state.routeKey) ||
-            arcTables.get(`${state.routeKey.split('-')[0]}-pri`);
-          if (!table || table.totalDist <= 0) continue;
-          const sampled = sampleArcLength(table, state.currentProgress);
-          if (isValidLatLng(sampled.lat, sampled.lng) && state.marker) {
-            state.marker.setLatLng([sampled.lat, sampled.lng]);
-            if (state.headingEl) {
-              state.headingEl.style.transform = `rotate(${Math.round(sampled.heading)}deg)`;
-            }
+            arcTables.get(`${bus.route_id || 'fallback'}-${isAlt ? 'alt' : 'pri'}`) ||
+            arcTables.get(`${bus.route_id || 'fallback'}-pri`) ||
+            routeGeometries[0]?.primaryTable;
+          if (!table || table.totalDist <= 0) return;
+          const sampled = sampleArcLength(table, busProgressRef.current[bus.bus_id] ?? 0.05);
+          const marker = markerInstancesRef.current[bus.bus_id];
+          if (marker && isValidLatLng(sampled.lat, sampled.lng)) {
+            marker.setLatLng([sampled.lat, sampled.lng]);
           }
-        }
+        });
       }
 
       animId = requestAnimationFrame(tick);
@@ -498,7 +448,7 @@ export default function FleetSpatialMap({
 
     animId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(animId);
-  }, [isSimulating, followBus, selectedBusId, arcTables]);
+  }, [isSimulating, followBus, selectedBusId, safeSnapshots, arcTables, routeGeometries]);
 
   const visibleGeometries = useMemo(() => {
     if (selectedRouteId === 'all') return routeGeometries;
@@ -608,6 +558,55 @@ export default function FleetSpatialMap({
             );
           })}
 
+        {isStudioActive && studioPolyline.length >= 2 && (
+          <Polyline
+            positions={studioPolyline}
+            pathOptions={{
+              color: '#4F46E5',
+              weight: 4.5,
+              opacity: 0.95,
+              lineJoin: 'round',
+              lineCap: 'round',
+            }}
+            interactive={false}
+          />
+        )}
+
+        {isStudioActive &&
+          studioStops.map((st, idx) => {
+            if (!st || !isValidLatLng(st.latitude, st.longitude)) return null;
+            const isOrigin = idx === 0;
+            const isDest = idx === studioStops.length - 1 && studioStops.length > 1;
+            const pinColor = isOrigin ? '#059669' : isDest ? '#D97706' : '#4F46E5';
+            const pinLabel = isOrigin ? '#1 (Origin)' : isDest ? `#${idx + 1} (Destination)` : `#${idx + 1}`;
+
+            const icon = L.divIcon({
+              className: '',
+              html: `<div style="background-color:${pinColor}; color:#ffffff; font-family:var(--font-sans, sans-serif); font-weight:700; font-size:11px; padding:3px 8px; border-radius:9999px; box-shadow:0 4px 10px rgba(0,0,0,0.18); border:2px solid #ffffff; white-space:nowrap; display:flex; align-items:center; gap:3px;">${pinLabel}</div>`,
+              iconSize: [60, 24],
+              iconAnchor: [30, 12],
+            });
+
+            return (
+              <Marker
+                key={`studio-stop-${st.id}-${idx}`}
+                position={[st.latitude, st.longitude]}
+                icon={icon}
+                eventHandlers={{
+                  click: () => onRemoveStudioStop && onRemoveStudioStop(idx),
+                }}
+                title={`${st.name} (Click to remove waypoint)`}
+              >
+                <Tooltip direction="top" offset={[0, -12]}>
+                  <div className="text-center font-sans">
+                    <p className="font-semibold text-xs text-neutral-900">{st.name}</p>
+                    <p className="text-[10px] text-neutral-500 font-medium">Click pin to remove from corridor</p>
+                  </div>
+                </Tooltip>
+              </Marker>
+            );
+          })}
+
         {showRoutes &&
           visibleGeometries.map((rg) => {
             return rg.stops.map((stop, sIdx) => {
@@ -671,14 +670,27 @@ export default function FleetSpatialMap({
           const isCompleted =
             bus.bus_status === 'COMPLETED' || bus.trip_status === 'JOURNEY_ENDED';
           const isDelayed =
-            (bus.delay_minutes !== undefined && bus.delay_minutes > 0) ||
+            (bus.delay_minutes !== undefined && bus.delay_minutes > 0.1) ||
             bus.route_variant === 'ALTERNATE_ROUTE_2' ||
             bus.is_detour;
 
-          const headingAngle = Math.round(bus.heading_deg ?? 0);
-          const pos: LatLngTuple = isValidLatLng(bus.latitude, bus.longitude)
-            ? [bus.latitude, bus.longitude]
-            : defaultCenter;
+          if (!initialPositionsRef.current[bus.bus_id]) {
+            const table = matchedRg?.primaryTable;
+            const initialProg = busProgressRef.current[bus.bus_id] ?? 0.05;
+            if (table && table.totalDist > 0) {
+              const pt = sampleArcLength(table, initialProg);
+              if (isValidLatLng(pt.lat, pt.lng)) {
+                initialPositionsRef.current[bus.bus_id] = [pt.lat, pt.lng];
+              }
+            }
+            if (!initialPositionsRef.current[bus.bus_id]) {
+              initialPositionsRef.current[bus.bus_id] = isValidLatLng(bus.latitude, bus.longitude)
+                ? [bus.latitude, bus.longitude]
+                : defaultCenter;
+            }
+          }
+
+          const staticInitialPos = initialPositionsRef.current[bus.bus_id];
 
           const iconHtml = `
             <div class="bus-marker ${isSelected ? 'bus-marker--selected' : ''} ${
@@ -686,7 +698,7 @@ export default function FleetSpatialMap({
           } ${isCompleted ? 'bus-marker--completed' : ''}" style="${
             !isSelected && !isCompleted && !isDelayed ? `background-color: ${color};` : ''
           }">
-              <span class="bus-marker__heading" style="transform: rotate(${headingAngle}deg);"></span>
+              <span class="bus-marker__heading" style="transform: rotate(${Math.round(bus.heading_deg ?? 0)}deg);"></span>
               ${isCompleted ? CHECK_SVG : BUS_SVG}
               <span class="bus-marker__label">${bus.fleet_code}</span>
             </div>
@@ -702,18 +714,17 @@ export default function FleetSpatialMap({
           return (
             <Marker
               key={`bus-marker-${bus.bus_id}`}
-              position={pos}
+              position={staticInitialPos}
               icon={icon}
               zIndexOffset={isSelected ? 1000 : 200}
               ref={(m) => {
-                const st = busStatesRef.current.get(bus.bus_id);
-                if (st) {
-                  st.marker = m;
-                  if (m) {
-                    const el = m.getElement();
-                    if (el) {
-                      st.headingEl = el.querySelector('.bus-marker__heading') as HTMLElement | null;
-                    }
+                markerInstancesRef.current[bus.bus_id] = m;
+                if (m) {
+                  const el = m.getElement();
+                  if (el) {
+                    headingElementsRef.current[bus.bus_id] = el.querySelector(
+                      '.bus-marker__heading',
+                    ) as HTMLElement | null;
                   }
                 }
               }}

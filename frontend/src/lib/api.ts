@@ -521,6 +521,8 @@ export interface CreateRouteRequest {
   assign_bus_id?: string;
   stops?: CreateRouteStopRequest[];
   active?: boolean;
+  primary_polyline?: [number, number][];
+  alternate_polyline?: [number, number][];
 }
 
 export interface DevTokenRequest {

@@ -105,6 +105,17 @@ interface AttackResult {
   message: string;
 }
 
+interface OsrmRouteResponse {
+  code?: string;
+  routes?: Array<{
+    distance?: number;
+    duration?: number;
+    geometry?: {
+      coordinates?: [number, number][];
+    };
+  }>;
+}
+
 const DEFAULT_DEMO_TENANTS: Tenant[] = [
   {
     id: '11111111-1111-1111-1111-111111111111',
@@ -3476,6 +3487,8 @@ export default function Home() {
   const [studioRouteCode, setStudioRouteCode] = useState<string>('');
   const [studioBusId, setStudioBusId] = useState<string>('');
   const [studioStops, setStudioStops] = useState<StudioStop[]>([]);
+  const [studioPolyline, setStudioPolyline] = useState<[number, number][]>([]);
+  const [studioDistanceKm, setStudioDistanceKm] = useState<number>(0);
   const [isLiveDeviceGps, setIsLiveDeviceGps] = useState<boolean>(false);
 
   const [showAddStop, setShowAddStop] = useState<boolean>(false);
@@ -4658,6 +4671,53 @@ export default function Home() {
     setStudioStops((prev) => prev.filter((_, i) => i !== index));
   }, []);
 
+  useEffect(() => {
+    if (studioStops.length < 2) {
+      setStudioPolyline([]);
+      setStudioDistanceKm(0);
+      return;
+    }
+    let isCancelled = false;
+    const controller = new AbortController();
+    const fetchRoadGeometry = async () => {
+      const coordsStr = studioStops.map((s) => `${s.longitude},${s.latitude}`).join(';');
+      try {
+        const res = await fetch(`https://router.project-osrm.org/route/v1/driving/${coordsStr}?overview=full&geometries=geojson`, {
+          signal: controller.signal,
+        });
+        if (!res.ok) throw new Error('OSRM request failed');
+        const data = (await res.json()) as OsrmRouteResponse;
+        if (isCancelled) return;
+        const coords = data.routes?.[0]?.geometry?.coordinates;
+        const distance = data.routes?.[0]?.distance;
+        if (coords && coords.length > 0) {
+          const mappedPolyline: [number, number][] = coords.map((c) => [c[1], c[0]]);
+          setStudioPolyline(mappedPolyline);
+          setStudioDistanceKm(distance ? Math.round((distance / 1000.0) * 10) / 10 : 0);
+          return;
+        }
+      } catch {
+        if (isCancelled) return;
+      }
+      if (!isCancelled) {
+        const fallbackPolyline: [number, number][] = studioStops.map((s) => [s.latitude, s.longitude]);
+        setStudioPolyline(fallbackPolyline);
+        let dist = 0;
+        for (let i = 0; i < studioStops.length - 1; i++) {
+          const dlat = (studioStops[i + 1].latitude - studioStops[i].latitude) * 111.0;
+          const dlng = (studioStops[i + 1].longitude - studioStops[i].longitude) * 111.0 * Math.cos((studioStops[i].latitude * Math.PI) / 180.0);
+          dist += Math.hypot(dlat, dlng);
+        }
+        setStudioDistanceKm(Math.round(dist * 10) / 10);
+      }
+    };
+    void fetchRoadGeometry();
+    return () => {
+      isCancelled = true;
+      controller.abort();
+    };
+  }, [studioStops]);
+
   const handleSaveStudioRoute = async () => {
     if (studioStops.length < 2 || !studioRouteName.trim() || !studioRouteCode.trim()) return;
     try {
@@ -4675,11 +4735,15 @@ export default function Home() {
           longitude: st.longitude,
           sequence: idx + 1,
         })),
+        primary_polyline: studioPolyline.length >= 2 ? studioPolyline : undefined,
+        distance_km: studioDistanceKm > 0 ? studioDistanceKm : undefined,
         active: true,
       });
       setRoutes((prev) => [created, ...prev]);
       setIsRouteStudioOpen(false);
       setStudioStops([]);
+      setStudioPolyline([]);
+      setStudioDistanceKm(0);
       setStudioRouteName('');
       setStudioRouteCode('');
       setStudioBusId('');
@@ -5744,7 +5808,7 @@ export default function Home() {
                             <span className="text-xs text-muted-foreground block font-sans">Estimated arrival</span>
                             {(activeSnapshot?.route_variant === 'ALTERNATE_ROUTE_2' || (riderStopETA?.delay_minutes ?? 0) > 0 || (activeSnapshot?.delay_minutes ?? 0) > 0 || activeSnapshot?.is_detour) ? (
                               <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[#FEF3C7] text-[#92400E] border border-[#F59E0B]/30 font-semibold font-sans">
-                                +{(riderStopETA?.delay_minutes ?? activeSnapshot?.delay_minutes ?? 4.5).toFixed(1)}m delay
+                                +{(riderStopETA?.delay_minutes ?? activeSnapshot?.delay_minutes ?? 0).toFixed(1)}m delay
                               </span>
                             ) : (
                               <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[#E6F4EA] text-[#162A22] font-semibold font-sans">
@@ -5760,7 +5824,7 @@ export default function Home() {
                           {riderStopETA?.status === 'PASSED'
                             ? 'Bus passed stop · Countdown to next loop'
                             : (activeSnapshot?.route_variant === 'ALTERNATE_ROUTE_2' || (riderStopETA?.delay_minutes ?? 0) > 0 || (activeSnapshot?.delay_minutes ?? 0) > 0)
-                            ? `Includes +${(riderStopETA?.delay_minutes ?? activeSnapshot?.delay_minutes ?? 4.5).toFixed(1)}m traffic delay`
+                            ? `Includes +${(riderStopETA?.delay_minutes ?? activeSnapshot?.delay_minutes ?? 0).toFixed(1)}m traffic delay`
                             : 'Live corridor telemetry tracking'}
                         </span>
                       </div>
@@ -6328,6 +6392,8 @@ export default function Home() {
                                 onClick={() => {
                                   setIsRouteStudioOpen(false);
                                   setStudioStops([]);
+                                  setStudioPolyline([]);
+                                  setStudioDistanceKm(0);
                                 }}
                                 className="text-xs font-sans text-black/60 hover:text-[#162A22] px-2.5 py-1 rounded-full border border-black/10 hover:bg-black/[0.04] transition-colors cursor-pointer shrink-0"
                               >
@@ -6440,7 +6506,7 @@ export default function Home() {
 
                           <div className="pt-3 border-t border-black/[0.06] flex flex-col gap-2 shrink-0">
                             <span className="text-[11px] text-black/50">
-                              {studioStops.length < 2 ? '⚠️ Place at least 2 stops on map' : '✅ Ready to dispatch corridor'}
+                              {studioStops.length < 2 ? '⚠️ Place at least 2 stops on map' : `✅ Ready to dispatch corridor${studioDistanceKm > 0 ? ` (${studioDistanceKm} km)` : ''}`}
                             </span>
                             <div className="flex items-center gap-2">
                               <button
@@ -6448,6 +6514,8 @@ export default function Home() {
                                 onClick={() => {
                                   setIsRouteStudioOpen(false);
                                   setStudioStops([]);
+                                  setStudioPolyline([]);
+                                  setStudioDistanceKm(0);
                                 }}
                                 className="flex-1 py-2 text-xs font-medium text-black/60 hover:text-[#162A22] text-center rounded-full border border-black/10 hover:bg-black/[0.04] transition-colors"
                               >
@@ -6488,6 +6556,7 @@ export default function Home() {
                           studioMode={isCreatingRoute}
                           isCreatingRoute={isCreatingRoute}
                           studioStops={studioStops}
+                          studioPolyline={studioPolyline}
                           onMapClick={handleStudioMapClick}
                           onRemoveStudioStop={handleRemoveStudioStop}
                           onReady={(map) => {
@@ -6510,7 +6579,7 @@ export default function Home() {
                                   Route 2 · Alternate Traffic Alignment
                                 </span>
                                 <span className="font-sans text-xs text-[#FDE68A]">
-                                  Delayed +{(activeSnapshot.delay_minutes || 4.8).toFixed(1)} min · Heavy traffic on Route 1
+                                  Delayed +{(activeSnapshot.delay_minutes || 0).toFixed(1)} min · Heavy traffic on Route 1
                                 </span>
                               </div>
                             ) : (
@@ -6633,7 +6702,7 @@ export default function Home() {
                                   <span className="font-sans text-xs text-black/50 truncate block">
                                     {activeSnapshot?.fleet_code || activeRoute.code} ·{' '}
                                     {activeSnapshot?.route_variant === 'ALTERNATE_ROUTE_2'
-                                      ? `Delayed +${(activeSnapshot.delay_minutes || 4.8).toFixed(1)} min · Heavy traffic on Route 1`
+                                      ? `Delayed +${(activeSnapshot.delay_minutes || 0).toFixed(1)} min · Heavy traffic on Route 1`
                                       : 'On schedule · Normal flow'}
                                   </span>
                                 </div>
@@ -6717,7 +6786,7 @@ export default function Home() {
                             <span className="text-xs font-sans text-black/50 block">{uniqueStopETAs.length} stops</span>
                             {activeSnapshot?.route_variant === 'ALTERNATE_ROUTE_2' ? (
                               <span className="inline-block mt-0.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-[#FEF3C7] text-[#92400E] border border-[#F59E0B]/30">
-                                Route 2 · Delayed +{(activeSnapshot.delay_minutes || 4.8).toFixed(1)}m
+                                Route 2 · Delayed +{(activeSnapshot.delay_minutes || 0).toFixed(1)}m
                               </span>
                             ) : (
                               <span className="inline-block mt-0.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-[#E6F4EA] text-[#162A22]">
@@ -6732,7 +6801,7 @@ export default function Home() {
                             {isAnyDetour || (activeSnapshot?.delay_minutes ?? 0) > 0 ? (
                               <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#FEF3C7] text-[#92400E] border border-[#F59E0B]/30 font-semibold text-[11px] font-sans">
                                 <span className="size-1.5 rounded-full bg-[#D97706] animate-pulse" />
-                                <span>Delayed +{Number(activeDetourDelayMinutes || activeSnapshot?.delay_minutes || 4.5).toFixed(1)} min</span>
+                                <span>Delayed +{Number(activeDetourDelayMinutes || activeSnapshot?.delay_minutes || 0).toFixed(1)} min</span>
                               </span>
                             ) : (
                               <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#E6F4EA] text-[#162A22] font-semibold text-[11px] font-sans">
@@ -6797,7 +6866,7 @@ export default function Home() {
                                       {!isBypassed && status === 'ARRIVING_NOW' && 'Arriving now'}
                                       {!isBypassed && status === 'UPCOMING' && (
                                         isRoute2 || (eta.delay_minutes && eta.delay_minutes > 0)
-                                          ? `${formatDuration(eta.eta_minutes)} (+${((eta.delay_minutes || activeSnapshot?.delay_minutes || 4.5)).toFixed(1)}m delay)`
+                                          ? `${formatDuration(eta.eta_minutes)} (+${((eta.delay_minutes || activeSnapshot?.delay_minutes || 0)).toFixed(1)}m delay)`
                                           : formatDuration(eta.eta_minutes)
                                       )}
                                     </span>

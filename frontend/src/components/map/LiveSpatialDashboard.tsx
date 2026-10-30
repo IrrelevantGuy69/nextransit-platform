@@ -60,6 +60,7 @@ interface LiveSpatialDashboardProps {
   studioMode?: boolean;
   isCreatingRoute?: boolean;
   studioStops?: StudioStop[];
+  studioPolyline?: [number, number][];
   onMapClick?: (lat: number, lng: number) => void;
   onRemoveStudioStop?: (index: number) => void;
   onReady?: (map: LeafletMap) => void;
@@ -85,6 +86,7 @@ export function LiveSpatialDashboard({
   studioMode = false,
   isCreatingRoute = false,
   studioStops = [],
+  studioPolyline = [],
   onMapClick,
   onRemoveStudioStop,
   onReady,
@@ -345,6 +347,7 @@ export function LiveSpatialDashboard({
           studioMode={isStudioActive}
           isCreatingRoute={isStudioActive}
           studioStops={studioStops}
+          studioPolyline={studioPolyline}
           onMapClick={onMapClick}
           onRemoveStudioStop={onRemoveStudioStop}
           followBus={followBus}
@@ -401,12 +404,10 @@ export function LiveSpatialDashboard({
                       ? ROUTE_PALETTE[routeIdx % ROUTE_PALETTE.length]
                       : ROUTE_PALETTE[bIdx % ROUTE_PALETTE.length];
                   const hasDelay =
-                    (bus.delay_minutes !== undefined && bus.delay_minutes > 0) ||
+                    (bus.delay_minutes !== undefined && bus.delay_minutes > 0.1) ||
                     bus.route_variant === 'ALTERNATE_ROUTE_2' ||
                     bus.is_detour;
-                  const delayText = bus.delay_minutes
-                    ? `+${bus.delay_minutes.toFixed(1)}m`
-                    : '+3.8m';
+                  const delayText = `+${(bus.delay_minutes || 0).toFixed(1)}m`;
 
                   return (
                     <button

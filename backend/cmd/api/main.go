@@ -409,16 +409,18 @@ type CreateRouteStopRequest struct {
 }
 
 type CreateRouteRequest struct {
-	TenantID         string                   `json:"tenant_id,omitempty"`
-	Name             string                   `json:"name"`
-	Code             string                   `json:"code"`
-	Origin           string                   `json:"origin,omitempty"`
-	Destination      string                   `json:"destination,omitempty"`
-	DistanceKm       float64                  `json:"distance_km,omitempty"`
-	EstimatedMinutes int                      `json:"estimated_minutes,omitempty"`
-	AssignBusID      *string                  `json:"assign_bus_id,omitempty"`
-	Stops            []CreateRouteStopRequest `json:"stops,omitempty"`
-	Active           *bool                    `json:"active,omitempty"`
+	TenantID          string                   `json:"tenant_id,omitempty"`
+	Name              string                   `json:"name"`
+	Code              string                   `json:"code"`
+	Origin            string                   `json:"origin,omitempty"`
+	Destination       string                   `json:"destination,omitempty"`
+	DistanceKm        float64                  `json:"distance_km,omitempty"`
+	EstimatedMinutes  int                      `json:"estimated_minutes,omitempty"`
+	AssignBusID       *string                  `json:"assign_bus_id,omitempty"`
+	Stops             []CreateRouteStopRequest `json:"stops,omitempty"`
+	Active            *bool                    `json:"active,omitempty"`
+	PrimaryPolyline   [][]float64              `json:"primary_polyline,omitempty"`
+	AlternatePolyline [][]float64              `json:"alternate_polyline,omitempty"`
 }
 
 type BusTelemetry struct {
@@ -1872,11 +1874,29 @@ func (s *Server) handleCreateRoute(w http.ResponseWriter, r *http.Request) {
 		active = *req.Active
 	}
 
+	var pBytes, aBytes []byte
+	if len(req.PrimaryPolyline) >= 2 {
+		pBytes, _ = json.Marshal(req.PrimaryPolyline)
+	} else if len(req.Stops) >= 2 {
+		var stopCoords [][]float64
+		for _, s := range req.Stops {
+			stopCoords = append(stopCoords, []float64{s.Latitude, s.Longitude})
+		}
+		spline := generateDenseClosedSpline(stopCoords, 30)
+		pBytes, _ = json.Marshal(spline)
+	}
+
+	if len(req.AlternatePolyline) >= 2 {
+		aBytes, _ = json.Marshal(req.AlternatePolyline)
+	} else if len(pBytes) > 0 {
+		aBytes = pBytes
+	}
+
 	var route Route
 	err := db.WithTenantTx(r.Context(), s.pool.Pool, tenantContext, func(tx pgx.Tx) error {
 		err := tx.QueryRow(r.Context(),
-			"INSERT INTO routes (id, tenant_id, name, code, origin, destination, distance_km, estimated_minutes, active) VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, tenant_id, name, code, origin, destination, distance_km, estimated_minutes, active, created_at",
-			targetTenantID, req.Name, req.Code, req.Origin, req.Destination, req.DistanceKm, req.EstimatedMinutes, active,
+			"INSERT INTO routes (id, tenant_id, name, code, origin, destination, distance_km, estimated_minutes, active, primary_polyline, alternate_polyline) VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id, tenant_id, name, code, origin, destination, distance_km, estimated_minutes, active, created_at",
+			targetTenantID, req.Name, req.Code, req.Origin, req.Destination, req.DistanceKm, req.EstimatedMinutes, active, pBytes, aBytes,
 		).Scan(&route.ID, &route.TenantID, &route.Name, &route.Code, &route.Origin, &route.Destination, &route.DistanceKm, &route.EstimatedMinutes, &route.Active, &route.CreatedAt)
 		if err != nil {
 			return err
@@ -2025,13 +2045,66 @@ func (s *Server) handleIngestTelemetry(w http.ResponseWriter, r *http.Request) {
 
 	var telemetry BusTelemetry
 	err := db.WithTenantTx(r.Context(), s.pool.Pool, tenantContext, func(tx pgx.Tx) error {
+		var routePolylineJSON []byte
+		var routeDistKm float64
+		if req.RouteID != nil && *req.RouteID != "" {
+			_ = tx.QueryRow(r.Context(), "SELECT primary_polyline, distance_km FROM routes WHERE id = $1::uuid", *req.RouteID).Scan(&routePolylineJSON, &routeDistKm)
+		}
+
+		var polyCoords [][]float64
+		if len(routePolylineJSON) > 0 {
+			_ = json.Unmarshal(routePolylineJSON, &polyCoords)
+		}
+
+		liveSpeed := math.Max(8.0, req.SpeedKmh)
+		var busProg float64
+		if len(polyCoords) >= 2 {
+			sampler := NewPolylineSampler(polyCoords)
+			_, busProg = sampler.ProjectPoint(req.Latitude, req.Longitude)
+			if routeDistKm <= 0 {
+				routeDistKm = sampler.totalDist / 1000.0
+			}
+		}
+		if routeDistKm <= 0 {
+			routeDistKm = 10.0
+		}
+
+		remainingKm := (1.0 - busProg) * routeDistKm
+		scheduledSpeed := 40.0
+		liveEta := (remainingKm / liveSpeed) * 60.0
+		scheduledEta := (remainingKm / scheduledSpeed) * 60.0
+		dynamicDelay := math.Max(0.0, math.Round((liveEta-scheduledEta)*10.0)/10.0)
+
+		var trafficLevel string
+		if liveSpeed < 22.0 {
+			trafficLevel = "HEAVY"
+		} else if liveSpeed < 32.0 {
+			trafficLevel = "MODERATE"
+		} else {
+			trafficLevel = "NORMAL"
+		}
+
+		curSeq := int(busProg/0.20) + 1
+		if curSeq > 5 {
+			curSeq = 5
+		}
+		progPct := math.Round(busProg*1000.0) / 10.0
+
+		_, _ = tx.Exec(r.Context(), `
+			UPDATE buses
+			SET route_progress = $1, current_stop_sequence = $2, progress_pct = $3,
+			    delay_minutes = $4, traffic_level = $5, trip_status = 'IN_TRANSIT'
+			WHERE id = $6::uuid`,
+			busProg, curSeq, progPct, dynamicDelay, trafficLevel, req.BusID)
+
 		err := tx.QueryRow(r.Context(),
-			"INSERT INTO bus_telemetry (recorded_at, tenant_id, bus_id, route_id, latitude, longitude, location, speed_kmh, heading_deg, occupancy) VALUES (NOW(), $1, $2, $3, $4, $5, ST_SetSRID(ST_MakePoint($5, $4), 4326)::geography, $6, $7, $8) RETURNING recorded_at, tenant_id, bus_id, route_id, latitude, longitude, speed_kmh, heading_deg, occupancy",
-			targetTenantID, req.BusID, req.RouteID, req.Latitude, req.Longitude, req.SpeedKmh, req.HeadingDeg, req.Occupancy,
-		).Scan(&telemetry.RecordedAt, &telemetry.TenantID, &telemetry.BusID, &telemetry.RouteID, &telemetry.Latitude, &telemetry.Longitude, &telemetry.SpeedKmh, &telemetry.HeadingDeg, &telemetry.Occupancy)
+			"INSERT INTO bus_telemetry (recorded_at, tenant_id, bus_id, route_id, latitude, longitude, location, speed_kmh, heading_deg, occupancy, trip_status, progress_pct) VALUES (NOW(), $1, $2, $3, $4, $5, ST_SetSRID(ST_MakePoint($5, $4), 4326)::geography, $6, $7, $8, 'IN_TRANSIT', $9) RETURNING recorded_at, tenant_id, bus_id, route_id, latitude, longitude, speed_kmh, heading_deg, occupancy, trip_status, progress_pct",
+			targetTenantID, req.BusID, req.RouteID, req.Latitude, req.Longitude, req.SpeedKmh, req.HeadingDeg, req.Occupancy, progPct,
+		).Scan(&telemetry.RecordedAt, &telemetry.TenantID, &telemetry.BusID, &telemetry.RouteID, &telemetry.Latitude, &telemetry.Longitude, &telemetry.SpeedKmh, &telemetry.HeadingDeg, &telemetry.Occupancy, &telemetry.TripStatus, &telemetry.ProgressPct)
 		if err != nil {
 			return err
 		}
+		telemetry.RouteProgress = busProg
 
 		if req.RouteID != nil && *req.RouteID != "" {
 			var distToRoute float64
@@ -2332,18 +2405,44 @@ func (s *Server) queryETAs(w http.ResponseWriter, r *http.Request, routeID strin
 			e.DelayMinutes = delayMinutes
 			e.DwellSeconds = dwellSeconds
 
-			totalMeters := routeDistKm * 1000.0
-			nominalStopProgress := float64(e.StopSequence-1) * 0.20
-			busProgress := routeProg
-
-			var distMeters float64
-			if nominalStopProgress >= busProgress {
-				distMeters = (nominalStopProgress - busProgress) * totalMeters
-			} else {
-				distMeters = ((1.0 - busProgress) + nominalStopProgress) * totalMeters
+			totalRouteKm := routeDistKm
+			if totalRouteKm <= 0 {
+				totalRouteKm = 9.0
 			}
+			busDistanceKm := routeProg * totalRouteKm
+			stopDistanceKm := (float64(e.StopSequence-1) / 5.0) * totalRouteKm
+
+			var remainingKm float64
+			if stopDistanceKm >= busDistanceKm {
+				remainingKm = stopDistanceKm - busDistanceKm
+			} else {
+				remainingKm = totalRouteKm - busDistanceKm + stopDistanceKm
+			}
+
+			liveSpeedKmh := math.Max(8.0, e.BusSpeedKmh)
+			if routeVariant == "ALTERNATE_ROUTE_2" {
+				liveSpeedKmh = 18.0
+			}
+			scheduledSpeedKmh := 40.0
+
+			upstreamStops := 0
+			if e.StopSequence >= curSeq {
+				upstreamStops = e.StopSequence - curSeq
+			} else {
+				upstreamStops = 5 - curSeq + e.StopSequence
+			}
+
+			liveEtaMinutes := (remainingKm / liveSpeedKmh) * 60.0 + (float64(upstreamStops) * 0.08)
+			scheduledEtaMinutes := (remainingKm / scheduledSpeedKmh) * 60.0
+			dynamicDelayMinutes := math.Max(0.0, math.Round((liveEtaMinutes-scheduledEtaMinutes)*10.0)/10.0)
+			if routeVariant == "ALTERNATE_ROUTE_2" && dynamicDelayMinutes < 2.0 {
+				dynamicDelayMinutes = 3.2
+			}
+
+			distMeters := remainingKm * 1000.0
 			e.DistanceMeters = distMeters
-			e.DistanceKm = math.Round((distMeters/1000.0)*100.0) / 100.0
+			e.DistanceKm = math.Round(remainingKm*100.0) / 100.0
+			e.DelayMinutes = dynamicDelayMinutes
 
 			if distMeters < 150.0 {
 				e.Status = "ARRIVING_NOW"
@@ -2351,19 +2450,17 @@ func (s *Server) queryETAs(w http.ResponseWriter, r *http.Request, routeID strin
 				e.MinETAMinutes = 0
 				e.MaxETAMinutes = 0
 				e.NextLoopETAMinutes = 0
-			} else if nominalStopProgress < busProgress {
+			} else if stopDistanceKm < busDistanceKm && (busDistanceKm-stopDistanceKm) > 0.15 {
 				e.Status = "PASSED"
-				nextSec := (distMeters / 9.5) + (delayMinutes * 60.0)
-				e.NextLoopETAMinutes = math.Max(1.0, math.Round((nextSec/60.0)*10.0)/10.0)
-				e.ETAMinutes = e.NextLoopETAMinutes
-				e.MinETAMinutes = math.Round((nextSec*0.88/60.0)*10.0) / 10.0
-				e.MaxETAMinutes = math.Round((nextSec*1.15/60.0)*10.0) / 10.0
+				e.ETAMinutes = math.Max(1.0, math.Round(liveEtaMinutes*10.0)/10.0)
+				e.MinETAMinutes = math.Round(liveEtaMinutes*0.88*10.0) / 10.0
+				e.MaxETAMinutes = math.Round(liveEtaMinutes*1.15*10.0) / 10.0
+				e.NextLoopETAMinutes = e.ETAMinutes
 			} else {
 				e.Status = "UPCOMING"
-				sec := (distMeters / 9.5) + (delayMinutes * 60.0)
-				e.ETAMinutes = math.Max(1.0, math.Round((sec/60.0)*10.0)/10.0)
-				e.MinETAMinutes = math.Round((sec*0.88/60.0)*10.0) / 10.0
-				e.MaxETAMinutes = math.Round((sec*1.15/60.0)*10.0) / 10.0
+				e.ETAMinutes = math.Max(1.0, math.Round(liveEtaMinutes*10.0)/10.0)
+				e.MinETAMinutes = math.Round(liveEtaMinutes*0.88*10.0) / 10.0
+				e.MaxETAMinutes = math.Round(liveEtaMinutes*1.15*10.0) / 10.0
 				e.NextLoopETAMinutes = 0
 			}
 
@@ -2491,12 +2588,37 @@ func (s *Server) handleSimulateStep(w http.ResponseWriter, r *http.Request) {
 			distToStop := math.Abs(newProgress - stopProg)
 			var newStatus string
 			var newSpeed float64
-			if distToStop < 0.012 {
+			var trafficLevel string
+
+			if b.RouteVariant == "ALTERNATE_ROUTE_2" {
+				newSpeed = 18.0 + 4.0*math.Sin(newProgress*math.Pi*8)
+				trafficLevel = "HEAVY"
+				newStatus = "IN_TRANSIT"
+			} else if distToStop < 0.012 {
 				newStatus = "AT_STOP"
 				newSpeed = 0.0
+				trafficLevel = "NORMAL"
 			} else {
 				newStatus = "IN_TRANSIT"
-				newSpeed = 36.0 + 8.0*math.Sin(newProgress*math.Pi*10)
+				newSpeed = 40.0 + 6.0*math.Sin(newProgress*math.Pi*8)
+				trafficLevel = "NORMAL"
+			}
+
+			routeTotalKm := sampler.totalDist / 1000.0
+			if routeTotalKm <= 0 {
+				routeTotalKm = 9.0
+			}
+
+			remainingRouteKm := (1.0 - newProgress) * routeTotalKm
+			speedForDelay := math.Max(8.0, newSpeed)
+			if newStatus == "AT_STOP" {
+				speedForDelay = 38.0
+			}
+			liveEta := (remainingRouteKm / speedForDelay) * 60.0
+			scheduledEta := (remainingRouteKm / 40.0) * 60.0
+			dynamicDelay := math.Max(0.0, math.Round((liveEta-scheduledEta)*10.0)/10.0)
+			if b.RouteVariant == "ALTERNATE_ROUTE_2" && dynamicDelay < 2.0 {
+				dynamicDelay = 3.2
 			}
 
 			newLat, newLng, newHeading := sampler.Sample(newProgress)
@@ -2507,7 +2629,7 @@ func (s *Server) handleSimulateStep(w http.ResponseWriter, r *http.Request) {
 				SET route_progress = $1, current_stop_sequence = $2, progress_pct = $3,
 				    trip_status = $4, delay_minutes = $5, traffic_level = $6
 				WHERE id = $7`,
-				newProgress, newSeq, newProgPct, newStatus, b.DelayMinutes, b.TrafficLevel, b.ID)
+				newProgress, newSeq, newProgPct, newStatus, dynamicDelay, trafficLevel, b.ID)
 			if err != nil {
 				return err
 			}
@@ -2797,6 +2919,48 @@ func (ps *PolylineSampler) Sample(progress float64) (float64, float64, float64) 
 
 	heading := calculateHeading(lat, lng, aheadLat, aheadLng)
 	return lat, lng, heading
+}
+
+func (ps *PolylineSampler) ProjectPoint(lat, lng float64) (float64, float64) {
+	if len(ps.coords) < 2 || ps.totalDist <= 0 {
+		return 0.0, 0.0
+	}
+	minDist := math.MaxFloat64
+	bestDistMeters := 0.0
+
+	for i := 0; i < len(ps.coords)-1; i++ {
+		p1 := ps.coords[i]
+		p2 := ps.coords[i+1]
+		dLat := p2[0] - p1[0]
+		dLng := p2[1] - p1[1]
+		segLenSq := dLat*dLat + dLng*dLng
+
+		var t float64
+		if segLenSq > 1e-12 {
+			t = ((lat-p1[0])*dLat + (lng-p1[1])*dLng) / segLenSq
+			if t < 0 {
+				t = 0
+			} else if t > 1 {
+				t = 1
+			}
+		}
+
+		projLat := p1[0] + t*dLat
+		projLng := p1[1] + t*dLng
+		dist := haversineDistanceMeters(lat, lng, projLat, projLng)
+
+		if dist < minDist {
+			minDist = dist
+			segDist := ps.cumDist[i+1] - ps.cumDist[i]
+			bestDistMeters = ps.cumDist[i] + t*segDist
+		}
+	}
+
+	progress := math.Mod(bestDistMeters/ps.totalDist, 1.0)
+	if progress < 0 {
+		progress += 1.0
+	}
+	return bestDistMeters / 1000.0, progress
 }
 
 func generateDenseClosedSpline(stops [][]float64, pointsPerSeg int) [][]float64 {
