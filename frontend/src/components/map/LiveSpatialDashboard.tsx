@@ -195,23 +195,6 @@ export function LiveSpatialDashboard({
     return safeSnapshots.filter((b) => b && b.route_id === selectedRouteId);
   }, [safeSnapshots, selectedRouteId]);
 
-  const hasAntiOverlapOffset = useMemo(() => {
-    for (let i = 0; i < filteredSnapshots.length; i++) {
-      for (let j = i + 1; j < filteredSnapshots.length; j++) {
-        const b1 = filteredSnapshots[i];
-        const b2 = filteredSnapshots[j];
-        if (b1 && b2 && isValidLatLng(b1.latitude, b1.longitude) && isValidLatLng(b2.latitude, b2.longitude)) {
-          const dist = Math.hypot(
-            b1.latitude - b2.latitude,
-            b1.longitude - b2.longitude,
-          );
-          if (dist < 0.0012) return true;
-        }
-      }
-    }
-    return false;
-  }, [filteredSnapshots]);
-
   const statItems = useMemo<StatPillItem[]>(() => {
     if (currentRole === 'DRIVER') {
       const driverBus =
@@ -431,13 +414,6 @@ export function LiveSpatialDashboard({
                 })}
               </div>
             </div>
-
-            {hasAntiOverlapOffset && (
-              <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#E6F4EA] border border-[#162A22]/10 text-[11px] font-medium text-[#162A22]">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                <span>Anti-overlap offset</span>
-              </div>
-            )}
           </div>
         )}
 

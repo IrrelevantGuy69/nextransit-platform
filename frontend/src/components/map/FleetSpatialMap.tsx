@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import 'leaflet/dist/leaflet.css';
 import L, { type Map as LeafletMap, type LeafletMouseEvent } from 'leaflet';
 import {
@@ -24,8 +24,8 @@ const BUS_SVG =
 const CHECK_SVG =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>';
 
-export const ROUTE_PALETTE = ['#162A22', '#D97706', '#0D9488', '#4F46E5'];
-export const ROUTE_RING_PALETTE = ['#86EFAC', '#FDE68A', '#99F6E4', '#C7D2FE'];
+export const ROUTE_PALETTE = ['#162A22', '#1D4ED8', '#7C3AED', '#0F766E', '#C2410C'];
+export const ROUTE_RING_PALETTE = ['#86EFAC', '#93C5FD', '#C4B5FD', '#99F6E4', '#FDBA74'];
 
 const TENANT_CENTERS: Record<string, LatLngTuple> = {
   '11111111-1111-1111-1111-111111111111': [3.1209, 101.6538],
@@ -33,7 +33,39 @@ const TENANT_CENTERS: Record<string, LatLngTuple> = {
   '33333333-3333-3333-3333-333333333333': [35.7126, 139.762],
   '44444444-4444-4444-4444-444444444444': [28.545, 77.1926],
   '55555555-5555-5555-5555-555555555555': [13.0184, 77.5683],
+  '66666666-6666-6666-6666-666666666666': [3.05, 101.69],
+  '77777777-7777-7777-7777-777777777777': [29.7, 77.0],
 };
+
+const osrmGeometryCache = new Map<string, LatLngTuple[]>();
+
+async function fetchOsrmGeometry(points: LatLngTuple[]): Promise<LatLngTuple[] | null> {
+  if (points.length < 2) return null;
+  const loopPoints = [...points, points[0]];
+  const coordsKey = loopPoints.map((p) => `${p[1].toFixed(5)},${p[0].toFixed(5)}`).join(';');
+  const cached = osrmGeometryCache.get(coordsKey);
+  if (cached) return cached;
+
+  try {
+    const url = `https://router.project-osrm.org/route/v1/driving/${coordsKey}?overview=full&geometries=geojson`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(4500) });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { routes?: Array<{ geometry?: { coordinates?: [number, number][] } }> };
+    const rawCoords = data.routes?.[0]?.geometry?.coordinates;
+    if (rawCoords && Array.isArray(rawCoords) && rawCoords.length > 0) {
+      const leafletCoords: LatLngTuple[] = rawCoords
+        .filter((c) => Array.isArray(c) && c.length >= 2 && isValidLatLng(c[1], c[0]))
+        .map((c) => [c[1], c[0]] as LatLngTuple);
+      if (leafletCoords.length > 0) {
+        osrmGeometryCache.set(coordsKey, leafletCoords);
+        return leafletCoords;
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
 
 function getSplinePoints(points: LatLngTuple[], numSegments: number = 8): LatLngTuple[] {
   const validPoints = (points || []).filter(
@@ -283,7 +315,8 @@ export default function FleetSpatialMap({
         .filter((s) => s && isValidLatLng(s.latitude, s.longitude))
         .map((s) => [s.latitude, s.longitude] as LatLngTuple);
 
-      const splinePoints = getSplinePoints(rawPoints);
+      const loopPoints = rawPoints.length >= 2 ? [...rawPoints, rawPoints[0]] : rawPoints;
+      const splinePoints = getSplinePoints(loopPoints);
 
       const isSingleBusMode = !!selectedBusSnapshot;
       const isActive = isSingleBusMode
@@ -438,6 +471,24 @@ export default function FleetSpatialMap({
     return getSplinePoints(raw);
   }, [studioStops]);
 
+  const [osrmRoutes, setOsrmRoutes] = useState<Record<string, LatLngTuple[]>>({});
+
+  useEffect(() => {
+    let active = true;
+    for (const p of multiRoutePaths) {
+      if (p.rawPoints.length >= 2 && !osrmRoutes[p.route.id]) {
+        fetchOsrmGeometry(p.rawPoints).then((geom) => {
+          if (active && geom && geom.length > 0) {
+            setOsrmRoutes((prev: Record<string, LatLngTuple[]>) => ({ ...prev, [p.route.id]: geom }));
+          }
+        });
+      }
+    }
+    return () => {
+      active = false;
+    };
+  }, [multiRoutePaths, osrmRoutes]);
+
   return (
     <div
       ref={mapContainerRef}
@@ -480,14 +531,15 @@ export default function FleetSpatialMap({
 
         {showRoutes &&
           (multiRoutePaths || []).map((rp) => {
-            const validSpline = (rp.splinePoints || []).filter(
-              (p) => Array.isArray(p) && p.length >= 2 && isValidLatLng(p[0], p[1]),
+            const linePoints = osrmRoutes[rp.route.id] || rp.splinePoints;
+            const validPositions = (linePoints || []).filter(
+              (p: LatLngTuple) => Array.isArray(p) && p.length >= 2 && isValidLatLng(p[0], p[1]),
             );
-            if (!rp.isActive || validSpline.length < 2) return null;
+            if (!rp.isActive || validPositions.length < 2) return null;
             return (
               <Polyline
                 key={`route-polyline-${rp.route.id}`}
-                positions={validSpline}
+                positions={validPositions}
                 pathOptions={{
                   color: rp.color,
                   weight: rp.isActive ? 4.5 : 2,
@@ -918,6 +970,12 @@ function FocusController({
       map.setView(center, 14, { animate: true });
     }
   }, [focusKey, map, center, routePath]);
+
+  useEffect(() => {
+    if (activeSnapshot && isValidLatLng(activeSnapshot.latitude, activeSnapshot.longitude)) {
+      map.panTo([activeSnapshot.latitude, activeSnapshot.longitude], { animate: true, duration: 0.6 });
+    }
+  }, [activeSnapshot?.bus_id, map]);
 
   return null;
 }

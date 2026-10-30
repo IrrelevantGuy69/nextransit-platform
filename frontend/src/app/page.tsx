@@ -9,6 +9,7 @@ import {
   ArrowUpRight,
   Bus,
   CheckCircle2,
+  Copy,
   Clock,
   Compass,
   Download,
@@ -74,7 +75,7 @@ import {
   SeatWaitlist,
 } from '@/lib/api';
 import { StudioStop, isValidLatLng } from '@/components/map/types';
-import { cn } from '@/lib/utils';
+import { cn, formatDuration } from '@/lib/utils';
 
 const LiveSpatialDashboard = dynamic(
   () => import('@/components/map/LiveSpatialDashboard'),
@@ -3524,6 +3525,8 @@ export default function Home() {
   const [waitlistEntries, setWaitlistEntries] = useState<SeatWaitlist[]>([]);
   const [manualQRInput, setManualQRInput] = useState<string>('');
   const [isCheckingInQR, setIsCheckingInQR] = useState<boolean>(false);
+  const [verifiedBoardingCount, setVerifiedBoardingCount] = useState<number>(0);
+  const [selectedUtilizationDayIdx, setSelectedUtilizationDayIdx] = useState<number>((new Date().getDay() + 6) % 7);
 
   const fetchTenantData = useCallback(async (tenantId: string, role: UserRole, overrideToken?: string) => {
     const activeToken = overrideToken || token || api.getToken() || (typeof window !== 'undefined' ? localStorage.getItem('transit_auth_token') : null);
@@ -3636,18 +3639,8 @@ export default function Home() {
     });
   }, [stops]);
 
-  const uniqueStopETAs = useMemo(() => {
-    const seen = new Set<string>();
-    return stopETAs.filter((item) => {
-      const key = `${item.route_id}-${item.stop_id}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-  }, [stopETAs]);
-
   const activeRoute = useMemo(() => {
-    if (selectedRouteId) {
+    if (selectedRouteId && selectedRouteId !== 'all') {
       const match = uniqueRoutes.find((r) => r.id === selectedRouteId);
       if (match) return match;
     }
@@ -3666,6 +3659,19 @@ export default function Home() {
       }
     );
   }, [uniqueRoutes, selectedRouteId, selectedTenantId]);
+
+  const uniqueStopETAs = useMemo(() => {
+    const targetRouteId = selectedRouteId !== 'all' ? selectedRouteId : (activeRoute?.id || uniqueRoutes[0]?.id);
+    const seen = new Set<string>();
+    return stopETAs
+      .filter((item) => !targetRouteId || item.route_id === targetRouteId)
+      .filter((item) => {
+        const key = `${item.route_id}-${item.stop_id}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+  }, [stopETAs, selectedRouteId, activeRoute?.id, uniqueRoutes]);
 
   const activeSnapshot = useMemo(() => {
     if (selectedBusId) {
@@ -3937,6 +3943,11 @@ export default function Home() {
     return buses.find((b) => b.id === targetId) || buses[0] || null;
   }, [buses, driverBusId, activeSnapshot]);
 
+  const displaySpeed = activeSnapshot?.speed_kmh != null ? Math.round(activeSnapshot.speed_kmh * 10) / 10 : 38.0;
+  const displayHeading = activeSnapshot?.heading_deg != null ? Math.round(activeSnapshot.heading_deg) : 90;
+  const bookedSeatsCount = useMemo(() => seats.filter((s) => s.status === 'BOOKED').length, [seats]);
+  const totalVerified = useMemo(() => Math.max(verifiedBoardingCount, seats.filter((s) => s.checked_in).length), [verifiedBoardingCount, seats]);
+
   const riderSelectedStop = useMemo(() => {
     const targetId = riderBoardingStopId || uniqueStops[0]?.id;
     return uniqueStops.find((s) => s.id === targetId) || uniqueStops[0] || null;
@@ -4028,13 +4039,12 @@ export default function Home() {
     if (!riderStopETA) return 'Calculating...';
     if (riderStopETA.status === 'ARRIVED') return 'At platform';
     if (riderStopETA.status === 'ARRIVING_NOW') return 'Arriving now';
-    if (riderStopETA.status === 'PASSED') return 'Passed stop';
+    if (riderStopETA.status === 'PASSED') {
+      const nextLoop = riderStopETA.next_loop_eta_minutes || 14;
+      return `Next loop · ${formatDuration(nextLoop)}`;
+    }
     if (riderStopETA.status === 'BYPASSED_DETOUR') return 'Bypassed (Detour)';
-    const totalSec = Math.max(0, Math.round((riderStopETA.eta_minutes || 0) * 60));
-    if (totalSec <= 20) return 'Arriving now';
-    const m = Math.floor(totalSec / 60);
-    const s = totalSec % 60;
-    return `Arriving in ${m}m ${s < 10 ? '0' : ''}${s}s`;
+    return formatDuration(riderStopETA.eta_minutes || 8);
   }, [riderStopETA]);
 
   const activeDetourDelayMinutes = useMemo(() => {
@@ -4133,18 +4143,25 @@ export default function Home() {
     return transitEvents.length > 0 ? transitEvents[0] : null;
   }, [transitEvents]);
 
+  const todayDayIdx = useMemo(() => (new Date().getDay() + 6) % 7, []);
+
   const utilizationDays = useMemo(() => {
+    const liveSeatLoad = seats.length > 0
+      ? Math.round((seats.filter((s) => s.status === 'BOOKED').length / seats.length) * 100)
+      : (activeSnapshot?.occupancy ? Math.round((activeSnapshot.occupancy / 40) * 100) : 74);
     const base = demandSuggestions.length > 0 ? (demandSuggestions[0].load_factor_pct || 72) : 72;
-    return [
-      { label: 'Mon', value: Math.min(98, Math.max(40, Math.round(base * 0.95))) },
-      { label: 'Tue', value: Math.min(98, Math.max(40, Math.round(base * 1.05))) },
-      { label: 'Wed', value: Math.min(98, Math.max(40, Math.round(base * 0.98))) },
-      { label: 'Thu', value: 94 },
-      { label: 'Fri', value: Math.min(98, Math.max(40, Math.round(base * 1.08))) },
-      { label: 'Sat', value: 61 },
-      { label: 'Sun', value: 54 },
+    const days = [
+      { label: 'Mon', fullName: 'Monday', value: Math.min(98, Math.max(40, Math.round(base * 0.95))) },
+      { label: 'Tue', fullName: 'Tuesday', value: Math.min(98, Math.max(40, Math.round(base * 1.05))) },
+      { label: 'Wed', fullName: 'Wednesday', value: Math.min(98, Math.max(40, Math.round(base * 0.98))) },
+      { label: 'Thu', fullName: 'Thursday', value: Math.min(98, Math.max(40, Math.round(base * 1.12))) },
+      { label: 'Fri', fullName: 'Friday', value: Math.min(98, Math.max(40, Math.round(base * 1.08))) },
+      { label: 'Sat', fullName: 'Saturday', value: Math.min(85, Math.max(35, Math.round(base * 0.72))) },
+      { label: 'Sun', fullName: 'Sunday', value: Math.min(75, Math.max(30, Math.round(base * 0.62))) },
     ];
-  }, [demandSuggestions]);
+    days[todayDayIdx].value = Math.min(98, Math.max(42, liveSeatLoad));
+    return days;
+  }, [seats, activeSnapshot?.occupancy, demandSuggestions, todayDayIdx]);
 
   const confirmedSeatsCount = useMemo(() => {
     return seats.filter((s) => s.status === 'BOOKED').length || 18;
@@ -4867,6 +4884,7 @@ export default function Home() {
       }, selectedTenantId);
       const seatsData = await api.getTripSeats(tripId);
       setSeats(seatsData);
+      setVerifiedBoardingCount((prev) => prev + 1);
       setNotification({
         type: 'success',
         message: res.message,
@@ -5427,70 +5445,80 @@ export default function Home() {
                     )}
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                      <div className="p-4 rounded-2xl bg-muted/40 border border-foreground/5">
-                        <span className="text-xs text-muted-foreground block">Trip status</span>
+                      <div className="p-4 rounded-2xl bg-muted/40 border border-foreground/5 flex flex-col justify-between">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs text-muted-foreground block font-sans">Trip status</span>
+                          <span className={cn(
+                            'size-2 rounded-full',
+                            driverTripStatus === 'IN_TRANSIT' ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'
+                          )} />
+                        </div>
                         <button
                           type="button"
                           onClick={() => setDriverTripStatus(driverTripStatus === 'IN_TRANSIT' ? 'AT_STOP' : 'IN_TRANSIT')}
                           className={cn(
-                            'mt-2 w-full py-2 px-3 rounded-xl text-xs font-semibold transition-all',
+                            'mt-2 w-full py-2 px-3 rounded-xl text-xs font-semibold transition-all cursor-pointer font-sans shadow-xs',
                             driverTripStatus === 'IN_TRANSIT'
-                              ? 'bg-[#10B981] text-white shadow-sm'
-                              : 'bg-chart-3/20 text-chart-3',
+                              ? 'bg-[#162A22] text-white hover:bg-[#1E352B]'
+                              : 'bg-amber-100 text-amber-900 border border-amber-200 hover:bg-amber-200',
                           )}
                         >
-                          {driverTripStatus === 'IN_TRANSIT' ? 'In transit' : 'At stop'}
+                          {driverTripStatus === 'IN_TRANSIT' ? 'In transit · On route' : 'At stop · Boarding'}
                         </button>
                       </div>
 
-                      <div className="p-4 rounded-2xl bg-muted/40 border border-foreground/5">
-                        <span className="text-xs text-muted-foreground block">Current speed</span>
-                        <p className="mt-1 text-2xl font-semibold tracking-tight font-sans text-primary">
-                          {activeSnapshot?.speed_kmh || 42} <span className="text-xs font-normal text-muted-foreground">km/h</span>
-                        </p>
-                        <span className="text-[11px] text-muted-foreground mt-0.5 block">
-                          Heading: {activeSnapshot?.heading_deg || 125}°
-                        </span>
-                      </div>
-
-                      <div className="p-4 rounded-2xl bg-muted/40 border border-foreground/5">
-                        <span className="text-xs text-muted-foreground block">Passenger occupancy</span>
-                        <div className="mt-1 flex items-center justify-between">
-                          <span className="text-xl font-semibold font-sans">
-                            {driverOccupancy} / {driverSelectedBus?.capacity || 42}
+                      <div className="p-4 rounded-2xl bg-muted/40 border border-foreground/5 flex flex-col justify-between">
+                        <span className="text-xs text-muted-foreground block font-sans">Current speed</span>
+                        <div>
+                          <p className="mt-1 text-2xl font-semibold tracking-tight font-sans text-primary">
+                            {displaySpeed.toFixed(1)} <span className="text-xs font-normal text-muted-foreground">km/h</span>
+                          </p>
+                          <span className="text-[11px] text-muted-foreground mt-0.5 block font-sans">
+                            Heading: {displayHeading}°
                           </span>
-                          <div className="flex items-center gap-1">
-                            <button
-                              type="button"
-                              onClick={() => setDriverOccupancy((prev) => Math.max(0, prev - 1))}
-                              className="size-7 rounded-lg bg-card border border-foreground/10 text-xs font-bold hover:bg-muted"
-                            >
-                              -
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setDriverOccupancy((prev) => Math.min(driverSelectedBus?.capacity || 42, prev + 1))}
-                              className="size-7 rounded-lg bg-card border border-foreground/10 text-xs font-bold hover:bg-muted"
-                            >
-                              +
-                            </button>
-                          </div>
                         </div>
-                        <span className="text-[11px] text-muted-foreground mt-0.5 block">
-                          {Math.round((driverOccupancy / (driverSelectedBus?.capacity || 42)) * 100)}% capacity
-                        </span>
                       </div>
 
                       <div className="p-4 rounded-2xl bg-muted/40 border border-foreground/5 flex flex-col justify-between">
-                        <span className="text-xs text-muted-foreground block">
-                          {isDriverOffline ? 'Offline buffer' : 'Simulate GPS ping'}
+                        <span className="text-xs text-muted-foreground block font-sans">Passenger occupancy</span>
+                        <div>
+                          <div className="mt-1 flex items-center justify-between">
+                            <span className="text-xl font-semibold font-sans">
+                              {driverOccupancy} / {driverSelectedBus?.capacity || 40}
+                            </span>
+                            <div className="flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => setDriverOccupancy((prev) => Math.max(0, prev - 1))}
+                                className="size-7 rounded-lg bg-card border border-foreground/10 text-xs font-bold hover:bg-muted cursor-pointer font-sans"
+                              >
+                                -
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setDriverOccupancy((prev) => Math.min(driverSelectedBus?.capacity || 40, prev + 1))}
+                                className="size-7 rounded-lg bg-card border border-foreground/10 text-xs font-bold hover:bg-muted cursor-pointer font-sans"
+                              >
+                                +
+                              </button>
+                            </div>
+                          </div>
+                          <span className="text-[11px] text-muted-foreground mt-0.5 block font-sans">
+                            {Math.round((driverOccupancy / (driverSelectedBus?.capacity || 40)) * 100)}% capacity
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="p-4 rounded-2xl bg-muted/40 border border-foreground/5 flex flex-col justify-between">
+                        <span className="text-xs text-muted-foreground block font-sans">
+                          {isDriverOffline ? 'Offline telemetry queue' : 'Simulate GPS ping'}
                         </span>
                         <button
                           type="button"
                           onClick={handleDriverEmitPing}
                           disabled={isSyncingBatch}
                           className={cn(
-                            'mt-2 w-full py-2 px-3 rounded-xl text-xs font-medium transition-all shadow-sm flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50',
+                            'mt-2 w-full py-2 px-3 rounded-xl text-xs font-medium transition-all shadow-sm flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 font-sans',
                             isDriverOffline
                               ? 'bg-amber-600 text-white hover:bg-amber-700'
                               : 'bg-primary text-primary-foreground hover:bg-primary/90',
@@ -5521,12 +5549,12 @@ export default function Home() {
                                 : 'Passenger Boarding Verification'}
                             </h4>
                             <span className="text-[10px] px-2 py-0.5 rounded-full bg-[#E6F4EA] text-[#162A22] font-semibold">
-                              HMAC-SHA256 Validator
+                              Verified Boarded: {totalVerified} / {bookedSeatsCount}
                             </span>
                           </div>
                           <p className="text-[11px] text-black/50 mt-0.5">
                             {activeTenant.sector_type === 'PRIVATE_CHARTER'
-                              ? 'Validate adult charter passenger manifests and 30kg luggage tags at coach door'
+                              ? 'Validate adult charter passenger manifests and luggage at coach door'
                               : activeTenant.sector_type === 'CORPORATE_SHUTTLE'
                               ? 'Validate corporate employee RFID badge tokens with 1-tap verification'
                               : 'Validate cryptographically signed QR tickets at vehicle doors with 1-tap verification'}
@@ -5552,7 +5580,7 @@ export default function Home() {
                                 setNotification({ type: 'error', message: 'Invalid QR token format' });
                               }
                             }}
-                            className="px-3 py-1.5 rounded-xl bg-[#162A22] text-white text-xs font-semibold hover:bg-[#1E352B] transition-all disabled:opacity-50 cursor-pointer"
+                            className="px-3 py-1.5 rounded-xl bg-[#162A22] text-white text-xs font-semibold hover:bg-[#1E352B] transition-all disabled:opacity-50 cursor-pointer font-sans"
                           >
                             Verify pass
                           </button>
@@ -5592,9 +5620,9 @@ export default function Home() {
 
                                   <div className="flex items-center gap-2">
                                     {seat.checked_in ? (
-                                      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#E6F4EA] text-[#162A22] font-semibold text-[11px]">
-                                        <CheckCircle2 className="size-3 text-[#162A22]" />
-                                        <span>Boarded</span>
+                                      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#E6F4EA] text-[#162A22] font-semibold text-[11px] shadow-xs">
+                                        <CheckCircle2 className="size-3 text-emerald-600" />
+                                        <span>Boarded ✓</span>
                                       </span>
                                     ) : (
                                       <button
@@ -5668,86 +5696,149 @@ export default function Home() {
                     </div>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                      <div className="p-4 rounded-2xl bg-muted/40 border border-foreground/5">
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs text-muted-foreground block">Approaching vehicle</span>
-                          <span
-                            className={cn(
-                              'text-[10px] px-2 py-0.5 rounded-full font-semibold truncate',
-                              (activeSnapshot?.route_variant === 'ALTERNATE_ROUTE_2' || riderStopETA?.route_variant === 'ALTERNATE_ROUTE_2')
-                                ? 'bg-[#FEF3C7] text-[#92400E] border border-[#F59E0B]/30'
-                                : 'bg-[#E6F4EA] text-[#162A22]',
-                            )}
-                          >
-                            {(activeSnapshot?.route_variant === 'ALTERNATE_ROUTE_2' || riderStopETA?.route_variant === 'ALTERNATE_ROUTE_2')
-                              ? 'Via Route 2 (Alternate Bypass)'
-                              : 'Via Route 1 (Primary)'}
-                          </span>
+                      <div className="p-4 rounded-2xl bg-muted/40 border border-foreground/5 flex flex-col justify-between">
+                        <div>
+                          <div className="flex items-center justify-between gap-1">
+                            <span className="text-xs text-muted-foreground block font-sans">Approaching vehicle</span>
+                            <span
+                              className={cn(
+                                'text-[10px] px-2 py-0.5 rounded-full font-semibold truncate shrink-0',
+                                (activeSnapshot?.route_variant === 'ALTERNATE_ROUTE_2' || riderStopETA?.route_variant === 'ALTERNATE_ROUTE_2')
+                                  ? 'bg-[#FEF3C7] text-[#92400E] border border-[#F59E0B]/30'
+                                  : 'bg-[#E6F4EA] text-[#162A22]',
+                              )}
+                            >
+                              {(activeSnapshot?.route_variant === 'ALTERNATE_ROUTE_2' || riderStopETA?.route_variant === 'ALTERNATE_ROUTE_2')
+                                ? 'Route 2 (Bypass)'
+                                : 'Route 1 (Primary)'}
+                            </span>
+                          </div>
+                          <p className="mt-1 text-base font-semibold font-sans text-primary truncate">
+                            {riderStopETA?.fleet_code || activeSnapshot?.fleet_code || 'Fleet En Route'} · {activeSnapshot?.model || 'Shuttle'}
+                          </p>
                         </div>
-                        <p className="mt-1 text-xl font-semibold font-sans text-primary">
-                          {riderStopETA?.fleet_code || activeSnapshot?.fleet_code || 'Fleet En Route'}
-                        </p>
-                        <span className="text-[11px] text-muted-foreground mt-0.5 block truncate">
-                          Target Stop: {riderSelectedStop?.name || 'Selected Stop'} (Stop #{riderStopSequence} on corridor)
+                        <span className="text-[11px] text-muted-foreground mt-1 block truncate font-sans">
+                          Target: {riderSelectedStop?.name || 'Selected Stop'} (Stop #{riderStopSequence})
                         </span>
                       </div>
 
-                      <div className="p-4 rounded-2xl bg-muted/40 border border-foreground/5">
-                        <span className="text-xs text-muted-foreground block">Distance from stop</span>
-                        <p className="mt-1 text-2xl font-semibold tracking-tight font-sans text-foreground">
-                          {riderStopETA?.distance_km !== undefined ? riderStopETA.distance_km : 1.85} <span className="text-xs font-normal text-muted-foreground">km</span>
-                        </p>
-                        <span className="text-[11px] text-chart-5 font-medium mt-0.5 block truncate">
+                      <div className="p-4 rounded-2xl bg-muted/40 border border-foreground/5 flex flex-col justify-between">
+                        <div>
+                          <span className="text-xs text-muted-foreground block font-sans">Distance from stop</span>
+                          <p className="mt-1 text-2xl font-semibold tracking-tight font-sans text-foreground">
+                            {riderStopETA?.distance_km !== undefined ? (Math.round(riderStopETA.distance_km * 100) / 100).toFixed(2) : '1.85'} <span className="text-xs font-normal text-muted-foreground">km</span>
+                          </p>
+                        </div>
+                        <span className="text-[11px] text-chart-5 font-medium mt-1 block truncate font-sans">
                           {stopsAwayFromRider > 0
-                            ? `Approaching stop (${stopsAwayFromRider} stop${stopsAwayFromRider > 1 ? 's' : ''} away)`
+                            ? `Approaching (${stopsAwayFromRider} stop${stopsAwayFromRider > 1 ? 's' : ''} away)`
                             : stopsAwayFromRider === 0
                             ? 'Arriving at stop now'
-                            : 'Passed stop (next loop)'}
+                            : `Next loop (${5 + stopsAwayFromRider} stops away)`}
                         </span>
                       </div>
 
-                      <div className="p-4 rounded-2xl bg-muted/40 border border-foreground/5">
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs text-muted-foreground block">Estimated arrival</span>
-                          {(activeSnapshot?.route_variant === 'ALTERNATE_ROUTE_2' || (riderStopETA?.delay_minutes ?? 0) > 0 || (activeSnapshot?.delay_minutes ?? 0) > 0 || activeSnapshot?.is_detour) ? (
-                            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[#FEF3C7] text-[#92400E] border border-[#F59E0B]/30 font-semibold animate-pulse">
-                              +{(riderStopETA?.delay_minutes ?? activeSnapshot?.delay_minutes ?? 4.8).toFixed(1)}m delay
-                            </span>
-                          ) : (
-                            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[#E6F4EA] text-[#162A22] font-semibold">
-                              On time
-                            </span>
-                          )}
+                      <div className="p-4 rounded-2xl bg-muted/40 border border-foreground/5 flex flex-col justify-between">
+                        <div>
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs text-muted-foreground block font-sans">Estimated arrival</span>
+                            {(activeSnapshot?.route_variant === 'ALTERNATE_ROUTE_2' || (riderStopETA?.delay_minutes ?? 0) > 0 || (activeSnapshot?.delay_minutes ?? 0) > 0 || activeSnapshot?.is_detour) ? (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[#FEF3C7] text-[#92400E] border border-[#F59E0B]/30 font-semibold font-sans">
+                                +{(riderStopETA?.delay_minutes ?? activeSnapshot?.delay_minutes ?? 4.5).toFixed(1)}m delay
+                              </span>
+                            ) : (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[#E6F4EA] text-[#162A22] font-semibold font-sans">
+                                On time
+                              </span>
+                            )}
+                          </div>
+                          <p className="mt-1 text-2xl font-semibold tracking-tight text-chart-5 font-sans">
+                            {riderCountdownFormatted}
+                          </p>
                         </div>
-                        <p className="mt-1 text-2xl font-semibold tracking-tight text-chart-5 font-sans">
-                          {riderCountdownFormatted}
-                        </p>
-                        <span className="text-[11px] text-muted-foreground mt-0.5 block truncate">
-                          {(activeSnapshot?.route_variant === 'ALTERNATE_ROUTE_2' || (riderStopETA?.delay_minutes ?? 0) > 0 || (activeSnapshot?.delay_minutes ?? 0) > 0)
-                            ? `Includes +${(riderStopETA?.delay_minutes ?? activeSnapshot?.delay_minutes ?? 4.8).toFixed(1)} min traffic delay · Route 2`
-                            : 'On time · Live corridor tracking'}
-                        </span>
-                        <span className="text-[10px] text-[#162A22] font-medium mt-1 block truncate bg-[#E6F4EA] px-2 py-0.5 rounded-md">
-                          ~3 min walk to stop · Leave in {Math.max(1, Math.round((riderStopETA?.eta_minutes ?? 8) - 3))} min
+                        <span className="text-[11px] text-muted-foreground mt-1 block truncate font-sans">
+                          {riderStopETA?.status === 'PASSED'
+                            ? 'Bus passed stop · Countdown to next loop'
+                            : (activeSnapshot?.route_variant === 'ALTERNATE_ROUTE_2' || (riderStopETA?.delay_minutes ?? 0) > 0 || (activeSnapshot?.delay_minutes ?? 0) > 0)
+                            ? `Includes +${(riderStopETA?.delay_minutes ?? activeSnapshot?.delay_minutes ?? 4.5).toFixed(1)}m traffic delay`
+                            : 'Live corridor telemetry tracking'}
                         </span>
                       </div>
 
-                      <div className="p-4 rounded-2xl bg-[#DDF3E4]/50 border border-foreground/5">
-                        <span className="text-xs text-foreground/80 block">
-                          {activeTenant.sector_type === 'CORPORATE_SHUTTLE'
-                            ? 'Available employee seats'
-                            : activeTenant.sector_type === 'PRIVATE_CHARTER'
-                            ? 'Reserved cabin seats'
-                            : 'Available passenger seats'}
-                        </span>
-                        <p className="mt-1 text-2xl font-semibold tracking-tight font-sans text-[#14281D]">
-                          {exactSeatCounts.free} <span className="text-xs font-normal text-muted-foreground">seats free / {exactSeatCounts.onboard} onboard</span>
-                        </p>
-                        <span className="text-[11px] text-foreground/70 mt-0.5 block truncate">
-                          {exactSeatCounts.booked} booked · {exactSeatCounts.held} held
+                      <div className="p-4 rounded-2xl bg-[#DDF3E4]/50 border border-foreground/5 flex flex-col justify-between">
+                        <div>
+                          <span className="text-xs text-foreground/80 block font-sans">
+                            {activeTenant.sector_type === 'CORPORATE_SHUTTLE'
+                              ? 'Available employee seats'
+                              : activeTenant.sector_type === 'PRIVATE_CHARTER'
+                              ? 'Reserved cabin seats'
+                              : 'Available passenger seats'}
+                          </span>
+                          <p className="mt-1 text-2xl font-semibold tracking-tight font-sans text-[#14281D]">
+                            {exactSeatCounts.free} <span className="text-xs font-normal text-muted-foreground">seats free</span>
+                          </p>
+                        </div>
+                        <span className="text-[11px] text-foreground/70 mt-1 block truncate font-sans">
+                          {exactSeatCounts.booked} booked · {exactSeatCounts.held} held · {exactSeatCounts.onboard} onboard
                         </span>
                       </div>
                     </div>
+
+                    {(activeBooking || seats.some((s) => s.status === 'BOOKED')) && (
+                      <div className="p-4 rounded-2xl bg-[#F7F6F2] border border-[#162A22]/10 space-y-3 font-sans">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                          <div className="flex items-center gap-3">
+                            <span className="size-10 rounded-xl bg-[#162A22] text-white font-bold text-sm grid place-items-center">
+                              {activeBooking?.seat_number || seats.find((s) => s.status === 'BOOKED')?.seat_number || '3B'}
+                            </span>
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <h4 className="text-sm font-semibold text-[#162A22] font-sans">
+                                  Student Boarding Pass · Seat {activeBooking?.seat_number || seats.find((s) => s.status === 'BOOKED')?.seat_number || '3B'}
+                                </h4>
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#E6F4EA] text-[#162A22] text-[10px] font-semibold">
+                                  <ShieldCheck className="size-3 text-emerald-600" />
+                                  <span>HMAC-SHA256 Confirmed</span>
+                                </span>
+                              </div>
+                              <p className="text-xs text-black/50 font-sans mt-0.5 truncate max-w-md">
+                                Token: {activeBooking?.qr_payload || (seats.find((s) => s.status === 'BOOKED')?.qr_token) || `NXT-PASS:${selectedTripId || trips[0]?.id || 'trip'}:3B:devsig`}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const tok = activeBooking?.qr_payload || (seats.find((s) => s.status === 'BOOKED')?.qr_token) || `NXT-PASS:${selectedTripId || trips[0]?.id || 'trip'}:3B:devsig`;
+                                if (typeof navigator !== 'undefined' && navigator.clipboard) {
+                                  navigator.clipboard.writeText(tok);
+                                }
+                                setNotification({ type: 'success', message: 'Boarding pass signature copied' });
+                              }}
+                              className="px-3 py-1.5 rounded-xl bg-card border border-foreground/15 text-[#162A22] text-xs font-semibold hover:bg-muted transition-all cursor-pointer flex items-center gap-1.5 font-sans"
+                            >
+                              <Copy className="size-3.5" />
+                              <span>Copy QR Pass Signature</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const tok = activeBooking?.qr_payload || (seats.find((s) => s.status === 'BOOKED')?.qr_token) || `NXT-PASS:${selectedTripId || trips[0]?.id || 'trip'}:3B:devsig`;
+                                setManualQRInput(tok);
+                                setSelectedRole('DRIVER');
+                                setNotification({ type: 'success', message: 'Boarding pass signature sent to Driver Scanner' });
+                              }}
+                              className="px-3 py-1.5 rounded-xl bg-[#162A22] text-white text-xs font-semibold hover:bg-[#1E352B] transition-all cursor-pointer flex items-center gap-1.5 font-sans"
+                            >
+                              <Radio className="size-3.5" />
+                              <span>Send to Driver Scanner</span>
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
 
                     <div className="mt-4 pt-4 border-t border-foreground/5 space-y-4">
                       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -6636,17 +6727,20 @@ export default function Home() {
                           </div>
                         </div>
                         <div className="space-y-2.5 max-h-[480px] overflow-y-auto pr-1">
-                          {isAnyDetour && (
-                            <div className="p-3 mb-2 rounded-2xl bg-[#FEF3D6] border border-[#B45309]/20 text-[#B45309] text-xs font-medium flex items-center justify-between">
-                              <div className="flex items-center gap-2">
-                                <TriangleAlert className="size-4 shrink-0" />
-                                <span>Live Detour Active: Congested corridor bypassed with +{activeDetourDelayMinutes} min recovery delay</span>
-                              </div>
-                              <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-[#B45309]/10">
-                                Active Reroute
+                          <div className="flex items-center justify-between p-2.5 mb-2 rounded-2xl bg-card border border-foreground/5 text-xs font-sans">
+                            <span className="text-black/60 font-sans">Corridor traffic status:</span>
+                            {isAnyDetour || (activeSnapshot?.delay_minutes ?? 0) > 0 ? (
+                              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#FEF3C7] text-[#92400E] border border-[#F59E0B]/30 font-semibold text-[11px] font-sans">
+                                <span className="size-1.5 rounded-full bg-[#D97706] animate-pulse" />
+                                <span>Delayed +{Number(activeDetourDelayMinutes || activeSnapshot?.delay_minutes || 4.5).toFixed(1)} min</span>
                               </span>
-                            </div>
-                          )}
+                            ) : (
+                              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#E6F4EA] text-[#162A22] font-semibold text-[11px] font-sans">
+                                <span className="size-1.5 rounded-full bg-emerald-500" />
+                                <span>On time</span>
+                              </span>
+                            )}
+                          </div>
                           {uniqueStopETAs.length === 0 ? (
                             <div className="py-8 text-center text-xs text-black/50 font-sans">
                               No stop arrival calculations available.
@@ -6678,7 +6772,7 @@ export default function Home() {
                                     </div>
                                     <span
                                       className={cn(
-                                        'px-2.5 py-1 rounded-full text-xs font-medium whitespace-nowrap',
+                                        'px-2.5 py-1 rounded-full text-xs font-medium whitespace-nowrap font-sans',
                                         isBypassed
                                           ? 'bg-amber-100 text-amber-900 border border-amber-200 font-semibold'
                                           : status === 'PASSED'
@@ -6693,14 +6787,18 @@ export default function Home() {
                                       )}
                                     >
                                       {isBypassed && 'Bypassed (Detour)'}
-                                      {!isBypassed && status === 'PASSED' && 'Passed'}
+                                      {!isBypassed && status === 'PASSED' && (
+                                        eta.next_loop_eta_minutes
+                                          ? `Next loop · ${formatDuration(eta.next_loop_eta_minutes)}`
+                                          : 'Passed'
+                                      )}
                                       {!isBypassed && status === 'TERMINAL_REACHED' && 'Terminal reached'}
                                       {!isBypassed && status === 'ARRIVED' && 'At stop'}
                                       {!isBypassed && status === 'ARRIVING_NOW' && 'Arriving now'}
                                       {!isBypassed && status === 'UPCOMING' && (
                                         isRoute2 || (eta.delay_minutes && eta.delay_minutes > 0)
-                                          ? `~${eta.eta_minutes} min (+${((eta.delay_minutes || activeSnapshot?.delay_minutes || 4.8)).toFixed(1)}m delay)`
-                                          : `~${eta.eta_minutes} min`
+                                          ? `${formatDuration(eta.eta_minutes)} (+${((eta.delay_minutes || activeSnapshot?.delay_minutes || 4.5)).toFixed(1)}m delay)`
+                                          : formatDuration(eta.eta_minutes)
                                       )}
                                     </span>
                                   </div>
@@ -7502,29 +7600,42 @@ export default function Home() {
                 </header>
                 <div className="mt-8 flex flex-1 items-end gap-2 sm:gap-3 min-h-[160px] pb-2">
                   {utilizationDays.map((d, i) => {
-                    const active = i === 3;
+                    const active = i === selectedUtilizationDayIdx;
                     return (
-                      <div key={d.label} className="flex h-full min-h-[160px] flex-1 flex-col items-center justify-end gap-2">
+                      <button
+                        key={d.label}
+                        type="button"
+                        onClick={() => setSelectedUtilizationDayIdx(i)}
+                        className="flex h-full min-h-[160px] flex-1 flex-col items-center justify-end gap-2 cursor-pointer outline-none group"
+                      >
                         {active ? (
                           <span className="whitespace-nowrap rounded-lg bg-[#162A22] px-2 py-1 text-[11px] font-medium text-white shadow-md font-sans">
                             {d.value}%
                           </span>
-                        ) : null}
+                        ) : (
+                          <span className="opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap rounded-lg bg-black/10 px-1.5 py-0.5 text-[10px] font-medium text-[#162A22] font-sans">
+                            {d.value}%
+                          </span>
+                        )}
                         <div
                           className={cn(
                             'w-full max-w-10 rounded-xl transition-all duration-500',
-                            active ? 'hatch bg-[#162A22]' : 'bg-[#D3EAD9] hover:bg-[#bde0c6]',
+                            active ? 'hatch bg-[#162A22]' : 'bg-[#D3EAD9] group-hover:bg-[#bde0c6]',
                           )}
                           style={{ height: `${(d.value / 100) * 100}%` }}
                         />
-                        <span className={cn('text-xs font-sans', active ? 'font-bold text-[#162A22]' : 'text-black/50')}>{d.label}</span>
-                      </div>
+                        <span className={cn('text-xs font-sans transition-colors', active ? 'font-bold text-[#162A22]' : 'text-black/50 group-hover:text-black/80')}>
+                          {d.label}
+                        </span>
+                      </button>
                     );
                   })}
                 </div>
                 <footer className="mt-4 pt-3 border-t border-black/[0.04] flex items-center justify-between text-xs text-black/60 font-sans">
-                  <span>Peak load recorded during Thursday morning corridor surge</span>
-                  <span className="font-semibold text-[#162A22]">94% Max Load</span>
+                  <span>
+                    {selectedUtilizationDayIdx === todayDayIdx ? 'Today' : utilizationDays[selectedUtilizationDayIdx].fullName}: operating at {utilizationDays[selectedUtilizationDayIdx].value}% capacity across {buses.length || 5} active shuttles
+                  </span>
+                  <span className="font-semibold text-[#162A22]">{utilizationDays[selectedUtilizationDayIdx].value}% Load</span>
                 </footer>
               </div>
 
@@ -8659,21 +8770,41 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="flex items-center justify-between text-xs text-muted-foreground">
-              <span className="inline-flex items-center gap-1.5 text-[#162A22] font-semibold">
-                <CheckCircle2 className="size-4 text-emerald-600" />
-                <span>
-                  {activeTenant.sector_type === 'PRIVATE_CHARTER'
-                    ? 'Manifest confirmed & luggage verified'
-                    : activeTenant.sector_type === 'CORPORATE_SHUTTLE'
-                    ? 'Shift badge confirmed & ready to board'
-                    : 'Confirmed & ready to board'}
-                </span>
-              </span>
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-muted-foreground pt-1">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const tok = activeBooking.qr_payload || `NXT-PASS:${activeBooking.ticket_code}`;
+                    if (typeof navigator !== 'undefined' && navigator.clipboard) {
+                      navigator.clipboard.writeText(tok);
+                    }
+                    setNotification({ type: 'success', message: 'Boarding pass signature copied' });
+                  }}
+                  className="px-3 py-1.5 rounded-xl bg-card border border-foreground/15 text-[#162A22] text-xs font-semibold hover:bg-muted transition-all cursor-pointer flex items-center gap-1.5 font-sans"
+                >
+                  <Copy className="size-3.5" />
+                  <span>Copy Signature</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const tok = activeBooking.qr_payload || `NXT-PASS:${activeBooking.ticket_code}`;
+                    setManualQRInput(tok);
+                    setShowBoardingPass(false);
+                    setSelectedRole('DRIVER');
+                    setNotification({ type: 'success', message: 'Pass loaded into driver scanner' });
+                  }}
+                  className="px-3 py-1.5 rounded-xl bg-[#162A22] text-white text-xs font-semibold hover:bg-[#1E352B] transition-all cursor-pointer flex items-center gap-1.5 font-sans"
+                >
+                  <Radio className="size-3.5" />
+                  <span>Send to Driver</span>
+                </button>
+              </div>
               <button
                 type="button"
                 onClick={() => setShowBoardingPass(false)}
-                className="px-4 py-2 rounded-xl bg-[#162A22] text-white font-semibold hover:bg-[#1E352B] transition-all cursor-pointer font-sans"
+                className="px-4 py-2 rounded-xl bg-[#162A22]/10 hover:bg-[#162A22]/20 text-[#162A22] font-semibold transition-all cursor-pointer font-sans"
               >
                 Close pass
               </button>

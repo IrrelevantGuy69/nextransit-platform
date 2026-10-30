@@ -199,6 +199,7 @@ export interface StopETA {
   traffic_level?: string;
   delay_minutes?: number;
   dwell_seconds?: number;
+  next_loop_eta_minutes?: number;
 }
 
 export interface TransitEvent {

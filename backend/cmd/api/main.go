@@ -512,8 +512,9 @@ type StopETA struct {
 	DetourExtraKm    float64  `json:"detour_extra_km,omitempty"`
 	RouteVariant     string   `json:"route_variant"`
 	TrafficLevel     string   `json:"traffic_level"`
-	DelayMinutes     float64  `json:"delay_minutes"`
-	DwellSeconds     int      `json:"dwell_seconds"`
+	DelayMinutes       float64  `json:"delay_minutes"`
+	DwellSeconds       int      `json:"dwell_seconds"`
+	NextLoopETAMinutes float64  `json:"next_loop_eta_minutes"`
 }
 
 type TransitEvent struct {
@@ -2072,18 +2073,55 @@ func (s *Server) handleLatestTelemetry(w http.ResponseWriter, r *http.Request) {
 	snapshots := make([]BusSnapshot, 0)
 	err := db.WithTenantTx(r.Context(), s.pool.Pool, tenantContext, func(tx pgx.Tx) error {
 		query := `
-			SELECT DISTINCT ON (t.bus_id)
-				t.recorded_at, t.tenant_id, t.bus_id, b.fleet_code, b.plate_number, b.model, b.capacity, b.status,
-				b.trip_status, b.current_stop_sequence, b.progress_pct, b.trip_ended_at,
-				t.route_id, COALESCE(r.code, ''), COALESCE(r.name, ''),
-				t.latitude, t.longitude, t.speed_kmh, t.heading_deg, t.occupancy,
-				COALESCE(b.is_detour, false), COALESCE(b.detour_reason, ''), b.detour_lat, b.detour_lng, COALESCE(b.bypassed_stop_sequences, '{}'),
-				b.detour_geometry, COALESCE(b.detour_delay_sec, 0), COALESCE(b.detour_extra_km, 0.0), COALESCE(b.detour_step_index, 0), b.detour_waypoints,
-				COALESCE(b.route_variant, 'PRIMARY_ROUTE_1'), COALESCE(b.traffic_level, 'NORMAL'), COALESCE(b.delay_minutes, 0.0), COALESCE(b.dwell_seconds, 20), COALESCE(b.segment_progress, 0.0)
-			FROM bus_telemetry t
-			JOIN buses b ON t.bus_id = b.id
-			LEFT JOIN routes r ON t.route_id = r.id
-			ORDER BY t.bus_id, t.recorded_at DESC`
+			SELECT
+				COALESCE(t.recorded_at, NOW()) as recorded_at,
+				b.tenant_id,
+				b.id as bus_id,
+				b.fleet_code,
+				b.plate_number,
+				b.model,
+				b.capacity,
+				b.status,
+				b.trip_status,
+				b.current_stop_sequence,
+				b.progress_pct,
+				b.trip_ended_at,
+				COALESCE(b.route_id, t.route_id) as route_id,
+				COALESCE(r.code, '') as route_code,
+				COALESCE(r.name, '') as route_name,
+				COALESCE(t.latitude, s.latitude, 0.0) as latitude,
+				COALESCE(t.longitude, s.longitude, 0.0) as longitude,
+				COALESCE(t.speed_kmh, 35.0) as speed_kmh,
+				COALESCE(t.heading_deg, 90.0) as heading_deg,
+				COALESCE(t.occupancy, 22) as occupancy,
+				COALESCE(b.is_detour, false),
+				COALESCE(b.detour_reason, ''),
+				b.detour_lat,
+				b.detour_lng,
+				COALESCE(b.bypassed_stop_sequences, '{}'),
+				b.detour_geometry,
+				COALESCE(b.detour_delay_sec, 0),
+				COALESCE(b.detour_extra_km, 0.0),
+				COALESCE(b.detour_step_index, 0),
+				b.detour_waypoints,
+				COALESCE(b.route_variant, 'PRIMARY_ROUTE_1'),
+				COALESCE(b.traffic_level, 'NORMAL'),
+				COALESCE(b.delay_minutes, 0.0),
+				COALESCE(b.dwell_seconds, 20),
+				COALESCE(b.segment_progress, 0.0)
+			FROM buses b
+			LEFT JOIN routes r ON r.id = b.route_id
+			LEFT JOIN route_stops rs ON rs.route_id = b.route_id AND rs.stop_sequence = b.current_stop_sequence
+			LEFT JOIN stops s ON s.id = rs.stop_id
+			LEFT JOIN LATERAL (
+				SELECT recorded_at, latitude, longitude, speed_kmh, heading_deg, occupancy, route_id
+				FROM bus_telemetry bt
+				WHERE bt.bus_id = b.id
+				ORDER BY bt.recorded_at DESC
+				LIMIT 1
+			) t ON true
+			WHERE b.status = 'ACTIVE'
+			ORDER BY b.fleet_code ASC`
 
 		rows, err := tx.Query(r.Context(), query)
 		if err != nil {
@@ -2171,11 +2209,13 @@ func (s *Server) queryETAs(w http.ResponseWriter, r *http.Request, routeID strin
 					COALESCE(b.delay_minutes, 0.0) as delay_minutes,
 					COALESCE(b.dwell_seconds, 20) as dwell_seconds,
 					COALESCE(b.segment_progress, 0.0) as segment_progress,
-					lb.route_id as active_route_id,
-					lb.location as bus_location,
-					COALESCE(lb.speed_kmh, 0.0) as live_speed_kmh
+					COALESCE(b.route_id, lb.route_id) as active_route_id,
+					COALESCE(lb.location, s_init.location) as bus_location,
+					COALESCE(lb.speed_kmh, 35.0) as live_speed_kmh
 				FROM buses b
 				LEFT JOIN latest_bus lb ON lb.bus_id = b.id
+				LEFT JOIN route_stops rs_init ON rs_init.route_id = b.route_id AND rs_init.stop_sequence = b.current_stop_sequence
+				LEFT JOIN stops s_init ON s_init.id = rs_init.stop_id
 				WHERE b.status = 'ACTIVE'
 			)
 			SELECT 
@@ -2203,7 +2243,7 @@ func (s *Server) queryETAs(w http.ResponseWriter, r *http.Request, routeID strin
 				COALESCE(bi.delay_minutes, 0.0) as delay_minutes,
 				COALESCE(bi.dwell_seconds, 20) as dwell_seconds,
 				COALESCE(bi.segment_progress, 0.0) as segment_progress,
-				COALESCE(ST_Distance(bi.bus_location, s.location), 0) as distance_meters,
+				COALESCE(ST_Distance(bi.bus_location::geography, s.location::geography), 0) as distance_meters,
 				COALESCE((
 					SELECT SUM(rss.historical_avg_seconds)::int
 					FROM route_stops rs_prev
@@ -2217,7 +2257,7 @@ func (s *Server) queryETAs(w http.ResponseWriter, r *http.Request, routeID strin
 			FROM route_stops rs
 			JOIN stops s ON rs.stop_id = s.id
 			JOIN routes r ON rs.route_id = r.id
-			LEFT JOIN bus_info bi ON bi.active_route_id = rs.route_id OR (bi.active_route_id IS NULL AND bi.tenant_id = r.tenant_id)
+			LEFT JOIN bus_info bi ON bi.active_route_id = rs.route_id
 			WHERE ($1 = '' OR rs.route_id = $1::uuid)
 			ORDER BY rs.route_id, rs.stop_sequence ASC`
 
@@ -2290,7 +2330,7 @@ func (s *Server) queryETAs(w http.ResponseWriter, r *http.Request, routeID strin
 
 			stopsAway := e.StopSequence - curSeq
 			if stopsAway < 0 {
-				stopsAway = 0
+				stopsAway = (maxSeq - curSeq) + e.StopSequence
 			}
 			dwellAllowanceSec := float64(stopsAway * dwellSeconds)
 			activeDelaySec := delayMinutes * 60.0
@@ -2300,16 +2340,21 @@ func (s *Server) queryETAs(w http.ResponseWriter, r *http.Request, routeID strin
 				e.ETAMinutes = 0
 				e.MinETAMinutes = 0
 				e.MaxETAMinutes = 0
+				e.NextLoopETAMinutes = 0
 			} else if e.StopSequence < curSeq {
 				e.Status = "PASSED"
-				e.ETAMinutes = 0
-				e.MinETAMinutes = 0
-				e.MaxETAMinutes = 0
+				loopStops := (maxSeq - curSeq) + e.StopSequence
+				loopSec := float64(loopStops)*300.0 + activeDelaySec
+				e.NextLoopETAMinutes = math.Round((loopSec/60.0)*10.0) / 10.0
+				e.ETAMinutes = e.NextLoopETAMinutes
+				e.MinETAMinutes = math.Round((loopSec*0.88/60.0)*10.0) / 10.0
+				e.MaxETAMinutes = math.Round((loopSec*1.15/60.0)*10.0) / 10.0
 			} else if tripStatus == "JOURNEY_ENDED" && e.StopSequence == maxSeq {
 				e.Status = "TERMINAL_REACHED"
 				e.ETAMinutes = 0
 				e.MinETAMinutes = 0
 				e.MaxETAMinutes = 0
+				e.NextLoopETAMinutes = 0
 			} else if e.DistanceMeters < 150.0 {
 				if e.BusSpeedKmh <= 5.0 {
 					e.Status = "ARRIVED"
@@ -2319,6 +2364,7 @@ func (s *Server) queryETAs(w http.ResponseWriter, r *http.Request, routeID strin
 				e.ETAMinutes = 0
 				e.MinETAMinutes = 0
 				e.MaxETAMinutes = 0
+				e.NextLoopETAMinutes = 0
 			} else {
 				e.Status = "UPCOMING"
 				var blendedSec float64
@@ -2334,6 +2380,7 @@ func (s *Server) queryETAs(w http.ResponseWriter, r *http.Request, routeID strin
 				e.ETAMinutes = calcEta
 				e.MinETAMinutes = calcMin
 				e.MaxETAMinutes = calcMax
+				e.NextLoopETAMinutes = calcEta
 			}
 
 			etas = append(etas, e)
@@ -2510,24 +2557,24 @@ func (s *Server) handleSimulateStep(w http.ResponseWriter, r *http.Request) {
 			}
 
 			if !hasTelemetry {
-				lastLat = stops[0].Latitude
-				lastLng = stops[0].Longitude
+				curSeqIdx := b.CurrentStopSequence - 1
+				if curSeqIdx < 0 || curSeqIdx >= len(stops) {
+					curSeqIdx = 0
+				}
+				nextSeqIdx := (curSeqIdx + 1) % len(stops)
+				lastLat = stops[curSeqIdx].Latitude
+				lastLng = stops[curSeqIdx].Longitude
 				lastSpeed = 38.0
-				lastHeading = calculateHeading(stops[0].Latitude, stops[0].Longitude, stops[1].Latitude, stops[1].Longitude)
+				lastHeading = calculateHeading(stops[curSeqIdx].Latitude, stops[curSeqIdx].Longitude, stops[nextSeqIdx].Latitude, stops[nextSeqIdx].Longitude)
 				lastOcc = 22
-				b.CurrentStopSequence = 1
-				b.ProgressPct = 0.0
 			}
 
-			numSegments := len(stops) - 1
+			numSegments := len(stops)
 			stepDelta := 0.045 + (float64(time.Now().UnixNano()%100) / 10000.0)
 
 			curSeq := b.CurrentStopSequence
-			if curSeq < 1 {
+			if curSeq < 1 || curSeq > len(stops) {
 				curSeq = 1
-			}
-			if curSeq > len(stops) {
-				curSeq = len(stops)
 			}
 
 			newSegProg := b.SegmentProgress + stepDelta
@@ -2536,15 +2583,9 @@ func (s *Server) handleSimulateStep(w http.ResponseWriter, r *http.Request) {
 			var newEndedAt *time.Time
 
 			if newSegProg >= 1.0 {
-				if curSeq >= numSegments {
-					newSeq = 1
-					newSegProg = 0.0
-					newStatus = "IN_TRANSIT"
-				} else {
-					newSeq = curSeq + 1
-					newSegProg = newSegProg - 1.0
-					newStatus = "IN_TRANSIT"
-				}
+				newSeq = (curSeq % len(stops)) + 1
+				newSegProg = newSegProg - 1.0
+				newStatus = "IN_TRANSIT"
 			} else {
 				newSeq = curSeq
 				if newSegProg < 0.06 {
@@ -2556,24 +2597,14 @@ func (s *Server) handleSimulateStep(w http.ResponseWriter, r *http.Request) {
 
 			newProg := math.Min(100.0, ((float64(newSeq-1) + newSegProg) / float64(numSegments)) * 100.0)
 
-			idx := newSeq - 1
-			if idx < 0 {
-				idx = 0
-			}
-			if idx >= numSegments {
-				idx = numSegments - 1
-			}
+			idx := (newSeq - 1) % len(stops)
+			nextIdx := newSeq % len(stops)
+			p0Idx := (newSeq - 2 + len(stops)) % len(stops)
+			p3Idx := (newSeq + 1) % len(stops)
+
 			p1 := stops[idx]
-			p2 := stops[idx+1]
-			p0Idx := idx - 1
-			if p0Idx < 0 {
-				p0Idx = 0
-			}
+			p2 := stops[nextIdx]
 			p0 := stops[p0Idx]
-			p3Idx := idx + 2
-			if p3Idx >= len(stops) {
-				p3Idx = len(stops) - 1
-			}
 			p3 := stops[p3Idx]
 
 			isAlternate := b.RouteVariant == "ALTERNATE_ROUTE_2" || b.IsDetour
@@ -3023,6 +3054,10 @@ func (s *Server) handleGetSeats(w http.ResponseWriter, r *http.Request) {
 			); err != nil {
 				return err
 			}
+			if seat.Status == "BOOKED" && (seat.QRToken == nil || *seat.QRToken == "") {
+				tok := s.generateBoardingQRToken(tripID, seat.SeatNumber)
+				seat.QRToken = &tok
+			}
 			seats = append(seats, seat)
 		}
 		return rows.Err()
@@ -3057,6 +3092,11 @@ func (s *Server) handleGetSeats(w http.ResponseWriter, r *http.Request) {
 					}
 					var heldUntil *time.Time
 					remSec := 0
+					var qrToken *string
+					if status == "BOOKED" {
+						tok := s.generateBoardingQRToken(tripID, seatNum)
+						qrToken = &tok
+					}
 					if status == "HELD" {
 						t := time.Now().Add(120 * time.Second)
 						heldUntil = &t
@@ -3064,10 +3104,10 @@ func (s *Server) handleGetSeats(w http.ResponseWriter, r *http.Request) {
 					}
 					var seatID string
 					_ = tx.QueryRow(r.Context(), `
-						INSERT INTO seat_inventory (id, tenant_id, trip_id, seat_number, status, held_until)
-						VALUES (gen_random_uuid(), $1::uuid, $2::uuid, $3, $4, $5)
-						ON CONFLICT (trip_id, seat_number) DO UPDATE SET status = EXCLUDED.status
-						RETURNING id::text`, tripTenantID, tripID, seatNum, status, heldUntil).Scan(&seatID)
+						INSERT INTO seat_inventory (id, tenant_id, trip_id, seat_number, status, held_until, qr_token)
+						VALUES (gen_random_uuid(), $1::uuid, $2::uuid, $3, $4, $5, $6)
+						ON CONFLICT (trip_id, seat_number) DO UPDATE SET status = EXCLUDED.status, qr_token = COALESCE(seat_inventory.qr_token, EXCLUDED.qr_token)
+						RETURNING id::text`, tripTenantID, tripID, seatNum, status, heldUntil, qrToken).Scan(&seatID)
 					seats = append(seats, SeatInventory{
 						ID:           seatID,
 						TenantID:     tripTenantID,
@@ -3076,6 +3116,7 @@ func (s *Server) handleGetSeats(w http.ResponseWriter, r *http.Request) {
 						Status:       status,
 						HeldUntil:    heldUntil,
 						RemainingSec: remSec,
+						QRToken:      qrToken,
 					})
 				}
 			}
