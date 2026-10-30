@@ -735,28 +735,6 @@ export default function FleetSpatialMap({
           );
         })}
       </MapContainer>
-
-      {!selectedBusId && routeGeometries.length > 0 && !studioMode && (
-        <div className="absolute bottom-4 right-4 z-[500] pointer-events-auto bg-white/95 backdrop-blur-md px-4 py-3 rounded-2xl border border-black/10 shadow-lg font-sans flex flex-col gap-1.5">
-          <span className="text-[10px] uppercase tracking-wider font-bold text-neutral-400">
-            Active Corridors ({routeGeometries.length})
-          </span>
-          <div className="flex flex-col gap-1">
-            {routeGeometries.map((rg) => (
-              <div
-                key={`legend-${rg.route.id}`}
-                className="flex items-center gap-2 text-xs font-medium text-neutral-800"
-              >
-                <span
-                  className="w-3 h-3 rounded-full shrink-0"
-                  style={{ backgroundColor: rg.color }}
-                />
-                <span className="truncate max-w-[150px]">{rg.route.code} · {rg.route.name}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   );
 }

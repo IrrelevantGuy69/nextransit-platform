@@ -358,7 +358,7 @@ export function LiveSpatialDashboard({
 
         {!isStudioActive && (
           <div
-            className={`absolute top-4 right-4 z-[500] pointer-events-auto flex flex-wrap items-center justify-between gap-2.5 bg-white/95 backdrop-blur-md px-4 py-2 rounded-2xl border border-black/10 shadow-lg font-sans transition-all duration-300 ${
+            className={`absolute top-4 right-4 z-[500] pointer-events-auto flex flex-wrap items-center gap-2.5 bg-white/95 backdrop-blur-md px-4 py-2 rounded-2xl border border-black/10 shadow-lg font-sans transition-all duration-300 ${
               isPanelCollapsed ? 'left-4' : 'left-4 lg:left-[368px]'
             }`}
           >
@@ -480,7 +480,7 @@ export function LiveSpatialDashboard({
         />
 
         {!isStudioActive && !isPanelCollapsed && (
-          <div className="absolute bottom-4 left-4 top-16 z-[500] w-[340px] max-h-[calc(100%-80px)] pointer-events-auto hidden md:block">
+          <div className="absolute bottom-3.5 left-4 top-14 z-[500] w-[340px] max-h-[calc(100%-70px)] pointer-events-auto hidden md:block">
             <RoutePanel
               role={currentRole}
               routes={safeRoutes}
