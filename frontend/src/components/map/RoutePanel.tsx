@@ -160,11 +160,8 @@ export function RoutePanel({
   const delayDisplay = `+${(activeBus?.delay_minutes || 0).toFixed(1)}m traffic delay`;
 
   return (
-    <section
-      aria-label="Fleet routing panel"
-      className="flex max-h-full flex-col overflow-hidden rounded-[24px] border border-black/10 bg-white/95 shadow-2xl backdrop-blur-md font-sans text-[#162A22]"
-    >
-      <div className="flex flex-col gap-2.5 border-b border-black/10 p-3.5">
+    <div className="flex flex-col h-full max-h-[calc(100vh-180px)] overflow-hidden bg-white rounded-2xl shadow-sm border border-[#E5E3DA] p-5 font-sans text-[#162A22]">
+      <div className="shrink-0 mb-4">
         <div className="flex items-start justify-between gap-2">
           <div>
             <div className="flex items-center gap-1.5">
@@ -182,12 +179,14 @@ export function RoutePanel({
                 : 'Real-time 5-stop arrival telemetry'}
             </p>
           </div>
-          <span className="rounded-full border border-black/10 bg-[#F7F6F2] px-2 py-0.5 text-[10px] font-semibold text-black/70">
+          <span className="rounded-full border border-black/10 bg-[#F7F6F2] px-2 py-0.5 text-[10px] font-semibold text-black/70 shrink-0">
             {stopRows.length} stops
           </span>
         </div>
+      </div>
 
-        {activeBus && (
+      {activeBus && (
+        <div className="shrink-0 mb-4">
           <div className="rounded-xl bg-[#F7F6F2] border border-black/[0.06] p-2.5">
             <div className="flex items-center justify-between text-xs">
               <span className="flex items-center gap-1.5 font-bold text-[#162A22]">
@@ -246,13 +245,13 @@ export function RoutePanel({
               )}
             </div>
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
-      <div className="flex-1 overflow-y-auto p-3 space-y-2 max-h-[380px]">
+      <div className="flex-1 overflow-y-auto pr-1 space-y-3 min-h-0">
         <div className="flex items-center justify-between px-1 mb-1">
           <span className="text-[10px] font-bold uppercase tracking-wider text-black/40">
-            Corridor Waypoints (5)
+            Corridor Waypoints ({stopRows.length || 5})
           </span>
           <span className="text-[10px] text-black/40">Click stop to pan</span>
         </div>
@@ -260,7 +259,7 @@ export function RoutePanel({
         <div className="relative pl-5 space-y-2.5 py-1">
           <div className="absolute bottom-2 left-[7px] top-2 w-0.5 bg-black/10" />
 
-          {stopRows.map((st, idx) => {
+          {stopRows.map((st) => {
             const isPassed = st.status === 'PASSED' || isCompleted;
             const isArriving = st.status === 'ARRIVING_NOW' && !isCompleted;
             const isUpcoming = !isPassed && !isArriving;
@@ -339,7 +338,7 @@ export function RoutePanel({
           })}
         </div>
       </div>
-    </section>
+    </div>
   );
 }
 

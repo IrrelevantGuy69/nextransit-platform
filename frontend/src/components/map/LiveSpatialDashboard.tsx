@@ -10,6 +10,8 @@ import {
   Gauge,
   Milestone,
   Navigation,
+  PanelLeftClose,
+  PanelLeftOpen,
   Route as RouteIcon,
   Users,
 } from 'lucide-react';
@@ -104,7 +106,7 @@ export function LiveSpatialDashboard({
   const [selectedRouteId, setSelectedRouteId] = useState<string>('all');
   const [recenterCount, setRecenterCount] = useState<number>(0);
   const [mapInstance, setMapInstance] = useState<LeafletMap | null>(null);
-  const [followBus, setFollowBus] = useState<boolean>(true);
+  const [isPanelCollapsed, setIsPanelCollapsed] = useState<boolean>(false);
 
   const currentRole = onRoleChange ? userRole : internalRole;
 
@@ -165,11 +167,11 @@ export function LiveSpatialDashboard({
                 const psw = padded.getSouthWest();
                 const pne = padded.getNorthEast();
                 if (isValidLatLng(psw.lat, psw.lng) && isValidLatLng(pne.lat, pne.lng)) {
-                  mapInstance.flyToBounds(padded, { padding: [40, 40], duration: 0.8, maxZoom: 16 });
+                  mapInstance.fitBounds(padded, { padding: [40, 40], maxZoom: 16, animate: true });
                   return;
                 }
               }
-              mapInstance.flyToBounds(bounds, { padding: [40, 40], duration: 0.8, maxZoom: 16 });
+              mapInstance.fitBounds(bounds, { padding: [40, 40], maxZoom: 16, animate: true });
             }
           }
         } catch {
@@ -350,13 +352,38 @@ export function LiveSpatialDashboard({
           studioPolyline={studioPolyline}
           onMapClick={onMapClick}
           onRemoveStudioStop={onRemoveStudioStop}
-          followBus={followBus}
+          followBus={false}
           isSimulating={isSimulating}
         />
 
         {!isStudioActive && (
-          <div className="absolute top-4 left-4 lg:left-[368px] right-4 z-[500] pointer-events-auto flex flex-wrap items-center justify-between gap-2.5 bg-white/95 backdrop-blur-md px-4 py-2 rounded-2xl border border-black/10 shadow-lg font-sans">
+          <div
+            className={`absolute top-4 right-4 z-[500] pointer-events-auto flex flex-wrap items-center justify-between gap-2.5 bg-white/95 backdrop-blur-md px-4 py-2 rounded-2xl border border-black/10 shadow-lg font-sans transition-all duration-300 ${
+              isPanelCollapsed ? 'left-4' : 'left-4 lg:left-[368px]'
+            }`}
+          >
             <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setIsPanelCollapsed((prev) => !prev)}
+                className="px-2.5 py-1 rounded-xl text-xs font-medium bg-[#F7F6F2] hover:bg-[#EFECE6] text-[#162A22] border border-black/[0.08] transition-colors cursor-pointer flex items-center gap-1.5"
+                title={isPanelCollapsed ? 'Expand waypoints panel' : 'Collapse waypoints panel'}
+              >
+                {isPanelCollapsed ? (
+                  <>
+                    <PanelLeftOpen className="size-3.5 text-[#162A22]" />
+                    <span>Expand Panel</span>
+                  </>
+                ) : (
+                  <>
+                    <PanelLeftClose className="size-3.5 text-[#162A22]" />
+                    <span>Collapse Panel</span>
+                  </>
+                )}
+              </button>
+
+              <div className="h-4 w-px bg-black/10 mx-0.5 hidden sm:block" />
+
               <div className="flex items-center gap-1.5 text-xs font-semibold text-[#162A22]">
                 <span className="text-[11px] font-medium text-black/50">Corridor:</span>
                 <select
@@ -441,43 +468,6 @@ export function LiveSpatialDashboard({
                 })}
               </div>
             </div>
-
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setFollowBus((f) => !f)}
-                className={`px-2.5 py-1 rounded-xl text-xs font-medium transition-all cursor-pointer flex items-center gap-1.5 ${
-                  followBus
-                    ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
-                    : 'bg-[#F7F6F2] text-black/60 border border-black/[0.08]'
-                }`}
-                title="Toggle camera auto-follow on selected bus"
-              >
-                <span
-                  className={`w-1.5 h-1.5 rounded-full ${
-                    followBus ? 'bg-emerald-500' : 'bg-neutral-400'
-                  }`}
-                />
-                <span>Follow: {followBus ? 'ON' : 'OFF'}</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => onToggleSimulate && onToggleSimulate()}
-                className={`px-2.5 py-1 rounded-xl text-xs font-medium transition-all cursor-pointer flex items-center gap-1.5 ${
-                  isSimulating
-                    ? 'bg-emerald-50 text-emerald-900 border border-emerald-200'
-                    : 'bg-amber-50 text-amber-900 border border-amber-200'
-                }`}
-              >
-                <span
-                  className={`w-1.5 h-1.5 rounded-full ${
-                    isSimulating ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'
-                  }`}
-                />
-                <span>{isSimulating ? 'Live 60 FPS' : 'Paused ⏸'}</span>
-              </button>
-            </div>
           </div>
         )}
 
@@ -489,8 +479,8 @@ export function LiveSpatialDashboard({
           onRecenter={handleRecenter}
         />
 
-        {!isStudioActive && (
-          <div className="absolute bottom-4 left-4 top-16 z-[500] w-[340px] pointer-events-auto hidden md:block">
+        {!isStudioActive && !isPanelCollapsed && (
+          <div className="absolute bottom-4 left-4 top-16 z-[500] w-[340px] max-h-[calc(100%-80px)] pointer-events-auto hidden md:block">
             <RoutePanel
               role={currentRole}
               routes={safeRoutes}
@@ -507,8 +497,8 @@ export function LiveSpatialDashboard({
               stopETAs={safeEtas}
               transitEvents={safeEvents}
               onSelectStop={(lat: number, lng: number) => {
-                if (mapInstance) {
-                  mapInstance.flyTo([lat, lng], 16, { duration: 0.8 });
+                if (mapInstance && isValidLatLng(lat, lng)) {
+                  mapInstance.setView([lat, lng], 16, { animate: true });
                 }
               }}
             />

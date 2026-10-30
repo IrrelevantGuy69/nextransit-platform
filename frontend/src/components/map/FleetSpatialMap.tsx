@@ -266,7 +266,7 @@ export default function FleetSpatialMap({
   studioPolyline = [],
   onMapClick,
   onRemoveStudioStop,
-  followBus = true,
+  followBus = false,
   isSimulating = true,
 }: FleetSpatialMapProps) {
   const isStudioActive = studioMode || isCreatingRoute;
