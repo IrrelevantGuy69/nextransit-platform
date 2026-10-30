@@ -203,7 +203,15 @@ export function LiveSpatialDashboard({
   const statItems = useMemo<StatPillItem[]>(() => {
     if (currentRole === 'DRIVER') {
       const driverBus =
-        safeSnapshots.find((b) => b && b.bus_id === selectedBusId) ?? safeSnapshots[0] ?? null;
+        safeSnapshots.find(
+          (b) =>
+            b &&
+            (b.bus_id === selectedBusId ||
+              b.fleet_code === selectedBusId ||
+              ('id' in b && (b as Record<string, unknown>).id === selectedBusId)),
+        ) ??
+        safeSnapshots[0] ??
+        null;
       const progressPercent = Math.min(
         100,
         Math.max(0, Math.round(driverBus?.progress_pct ?? 0)),
@@ -211,7 +219,10 @@ export function LiveSpatialDashboard({
       const isCompleted =
         driverBus?.bus_status === 'COMPLETED' || driverBus?.trip_status === 'JOURNEY_ENDED';
       const upcomingEta = safeEtas.find(
-        (e) => e && e.bus_id === driverBus?.bus_id && e.eta_minutes > 0,
+        (e) =>
+          e &&
+          (e.bus_id === driverBus?.bus_id || e.fleet_code === driverBus?.fleet_code) &&
+          e.eta_minutes > 0,
       );
 
       return [
@@ -415,7 +426,7 @@ export function LiveSpatialDashboard({
                   type="button"
                   onClick={() => onSelectBus('')}
                   className={`px-3 py-1 rounded-xl text-xs font-medium transition-all cursor-pointer ${
-                    !selectedBusId
+                    !selectedBusId || selectedBusId === 'ALL' || selectedBusId === 'all'
                       ? 'bg-[#162A22] text-white shadow-xs'
                       : 'bg-[#F7F6F2] hover:bg-[#EFECE6] text-[#162A22] border border-black/[0.06]'
                   }`}
@@ -424,7 +435,13 @@ export function LiveSpatialDashboard({
                 </button>
 
                 {filteredSnapshots.map((bus, bIdx) => {
-                  const isSelected = bus.bus_id === selectedBusId;
+                  const isSelected =
+                    Boolean(selectedBusId) &&
+                    selectedBusId !== 'ALL' &&
+                    selectedBusId !== 'all' &&
+                    (bus.bus_id === selectedBusId ||
+                      bus.fleet_code === selectedBusId ||
+                      ('id' in bus && (bus as Record<string, unknown>).id === selectedBusId));
                   const routeIdx = safeRoutes.findIndex((r) => r.id === bus.route_id);
                   const dotColor =
                     routeIdx >= 0

@@ -3687,8 +3687,13 @@ export default function Home() {
   }, [stopETAs, selectedRouteId, activeRoute?.id, uniqueRoutes]);
 
   const activeSnapshot = useMemo(() => {
-    if (selectedBusId) {
-      const match = snapshots.find((s) => s.bus_id === selectedBusId);
+    if (selectedBusId && selectedBusId !== 'ALL' && selectedBusId !== 'all') {
+      const match = snapshots.find(
+        (s) =>
+          s.bus_id === selectedBusId ||
+          s.fleet_code === selectedBusId ||
+          ('id' in s && (s as Record<string, unknown>).id === selectedBusId),
+      );
       if (match) return match;
     }
     return snapshots[0] || null;
@@ -3968,8 +3973,18 @@ export default function Home() {
 
   const riderStopETA = useMemo(() => {
     if (!riderSelectedStop) return null;
-    return uniqueStopETAs.find((e) => e.stop_id === riderSelectedStop.id) || uniqueStopETAs[0] || null;
-  }, [uniqueStopETAs, riderSelectedStop]);
+    const targetBusId = selectedBusId || activeSnapshot?.bus_id;
+    return (
+      stopETAs.find(
+        (e) =>
+          e.stop_id === riderSelectedStop.id &&
+          (targetBusId ? e.bus_id === targetBusId || e.fleet_code === targetBusId : true),
+      ) ||
+      uniqueStopETAs.find((e) => e.stop_id === riderSelectedStop.id) ||
+      uniqueStopETAs[0] ||
+      null
+    );
+  }, [riderSelectedStop, selectedBusId, activeSnapshot?.bus_id, stopETAs, uniqueStopETAs]);
 
   const riderStopIdx = useMemo(() => {
     const currentStopId = riderBoardingStopId || uniqueStops[0]?.id;
@@ -4083,13 +4098,16 @@ export default function Home() {
         onboard: booked,
       };
     }
+    const capacity = activeSnapshot?.capacity || 40;
+    const occ = activeSnapshot?.occupancy ?? dynamicOccupancyCount;
+    const free = Math.max(0, capacity - occ);
     return {
-      free: riderRemainingSeats,
-      booked: dynamicOccupancyCount,
-      held: 2,
-      onboard: dynamicOccupancyCount,
+      free: free,
+      booked: occ,
+      held: Math.min(2, free),
+      onboard: occ,
     };
-  }, [seats, riderRemainingSeats, dynamicOccupancyCount]);
+  }, [seats, activeSnapshot?.capacity, activeSnapshot?.occupancy, dynamicOccupancyCount]);
 
   const filteredEvents = useMemo(() => {
     if (!searchQuery.trim()) return transitEvents;
@@ -6535,7 +6553,7 @@ export default function Home() {
                           onResetTrip={handleResetTrip}
                           userRole={selectedRole}
                           onRoleChange={(r) => setSelectedRole(r)}
-                          stopETAs={uniqueStopETAs}
+                          stopETAs={stopETAs}
                           transitEvents={transitEvents}
                           isSimulating={isSimulating}
                           onToggleSimulate={() => setIsSimulating((prev) => !prev)}

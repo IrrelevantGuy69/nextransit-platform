@@ -455,14 +455,20 @@ export default function FleetSpatialMap({
     return routeGeometries.filter((rg) => rg.route.id === selectedRouteId);
   }, [routeGeometries, selectedRouteId]);
 
+  const isBusSelected = Boolean(
+    selectedBusId &&
+    selectedBusId !== 'ALL' &&
+    selectedBusId !== 'all' &&
+    selectedBusId !== ''
+  );
+
   const visibleBuses = useMemo(() => {
     return safeSnapshots.filter((bus) => {
       if (!bus || !bus.bus_id) return false;
-      if (selectedBusId) return bus.bus_id === selectedBusId;
       if (selectedRouteId === 'all') return true;
       return bus.route_id === selectedRouteId;
     });
-  }, [safeSnapshots, selectedBusId, selectedRouteId]);
+  }, [safeSnapshots, selectedRouteId]);
 
   return (
     <div
@@ -667,7 +673,11 @@ export default function FleetSpatialMap({
           const matchedRg =
             routeGeometries.find((r) => r.route.id === bus.route_id) || routeGeometries[0];
           const color = matchedRg ? matchedRg.color : ROUTE_PALETTE[0];
-          const isSelected = bus.bus_id === selectedBusId;
+          const isSelected =
+            isBusSelected &&
+            (bus.bus_id === selectedBusId ||
+              bus.fleet_code === selectedBusId ||
+              ('id' in bus && (bus as Record<string, unknown>).id === selectedBusId));
           const isCompleted =
             bus.bus_status === 'COMPLETED' || bus.trip_status === 'JOURNEY_ENDED';
           const isDelayed =
@@ -765,8 +775,21 @@ function FocusController({
       return;
     }
 
-    if (selectedBusId) {
-      const bus = snapshots.find((b) => b && b.bus_id === selectedBusId);
+    const isFocusBusSelected = Boolean(
+      selectedBusId &&
+      selectedBusId !== 'ALL' &&
+      selectedBusId !== 'all' &&
+      selectedBusId !== ''
+    );
+
+    if (isFocusBusSelected) {
+      const bus = snapshots.find(
+        (b) =>
+          b &&
+          (b.bus_id === selectedBusId ||
+            b.fleet_code === selectedBusId ||
+            ('id' in b && (b as Record<string, unknown>).id === selectedBusId)),
+      );
       if (bus && isValidLatLng(bus.latitude, bus.longitude)) {
         map.setView([bus.latitude, bus.longitude], 15, { animate: false });
         lastFocusedKeyRef.current = focusKey;

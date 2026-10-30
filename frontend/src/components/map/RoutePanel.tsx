@@ -64,17 +64,37 @@ export function RoutePanel({
   const safeStops = stops || [];
   const safeEtas = stopETAs || [];
 
-  const activeBus =
-    safeSnapshots.find((b) => b && b.bus_id === selectedBusId) ??
-    safeSnapshots.find((b) => b && selectedRouteId !== 'all' && b.route_id === selectedRouteId) ??
-    safeSnapshots[0] ??
-    null;
+  const isBusSelected = Boolean(
+    selectedBusId &&
+    selectedBusId !== 'ALL' &&
+    selectedBusId !== 'all' &&
+    selectedBusId !== ''
+  );
 
-  const currentRoute =
-    safeRoutes.find((r) => r.id === (activeBus?.route_id || selectedRouteId)) ??
-    activeRoute ??
-    safeRoutes[0] ??
-    null;
+  const activeBus = isBusSelected
+    ? (safeSnapshots.find(
+        (b) =>
+          b &&
+          (b.bus_id === selectedBusId ||
+            b.fleet_code === selectedBusId ||
+            b.plate_number === selectedBusId ||
+            ('id' in b && (b as Record<string, unknown>).id === selectedBusId)),
+      ) ??
+      safeSnapshots[0] ??
+      null)
+    : (safeSnapshots.find((b) => b && selectedRouteId !== 'all' && b.route_id === selectedRouteId) ??
+      safeSnapshots[0] ??
+      null);
+
+  const currentRoute = isBusSelected && activeBus?.route_id
+    ? (safeRoutes.find((r) => r.id === activeBus.route_id) ??
+       safeRoutes.find((r) => r.code === activeBus.route_code) ??
+       safeRoutes[0] ??
+       null)
+    : (safeRoutes.find((r) => r.id === (selectedRouteId !== 'all' ? selectedRouteId : activeBus?.route_id)) ??
+       activeRoute ??
+       safeRoutes[0] ??
+       null);
 
   const routeIndex = safeRoutes.findIndex((r) => r.id === currentRoute?.id);
   const routeColor =
@@ -93,7 +113,14 @@ export function RoutePanel({
   };
 
   const routeEtas = currentRoute
-    ? safeEtas.filter((e) => e && e.route_id === currentRoute.id)
+    ? safeEtas.filter((e) => {
+        if (!e || e.route_id !== currentRoute.id) return false;
+        if (isBusSelected && activeBus) {
+          if (e.bus_id && activeBus.bus_id && e.bus_id !== activeBus.bus_id) return false;
+          if (e.fleet_code && activeBus.fleet_code && e.fleet_code !== activeBus.fleet_code) return false;
+        }
+        return true;
+      })
     : [];
 
   const sortedEtas = [...routeEtas].sort((a, b) => a.stop_sequence - b.stop_sequence);
@@ -131,8 +158,10 @@ export function RoutePanel({
       }
     }
   } else if (currentRoute) {
-    const matchingStops = safeStops.slice(0, 5);
-    matchingStops.forEach((st, idx) => {
+    const rIdx = Math.max(0, safeRoutes.findIndex((r) => r.id === currentRoute.id));
+    const matchingStops = safeStops.slice(rIdx * 5, rIdx * 5 + 5);
+    const fallbackStops = matchingStops.length > 0 ? matchingStops : safeStops.slice(0, 5);
+    fallbackStops.forEach((st, idx) => {
       stopRows.push({
         id: st.id,
         sequence: idx + 1,
@@ -260,8 +289,16 @@ export function RoutePanel({
           <div className="absolute bottom-2 left-[7px] top-2 w-0.5 bg-black/10" />
 
           {stopRows.map((st) => {
-            const isPassed = st.status === 'PASSED' || isCompleted;
-            const isArriving = st.status === 'ARRIVING_NOW' && !isCompleted;
+            const isPassed =
+              st.status === 'PASSED' ||
+              isCompleted ||
+              (activeBus?.current_stop_sequence ? st.sequence < activeBus.current_stop_sequence : false);
+            const isArriving =
+              !isPassed &&
+              !isCompleted &&
+              (st.status === 'ARRIVING_NOW' ||
+                (activeBus?.current_stop_sequence === st.sequence &&
+                  (activeBus?.trip_status === 'AT_STOP' || st.etaMinutes <= 0.5)));
             const isUpcoming = !isPassed && !isArriving;
 
             let countdownText = 'Passed';
