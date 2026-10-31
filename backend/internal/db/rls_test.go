@@ -36,6 +36,10 @@ func getDBURL(envVar, defaultLocal, fallbackIP string) string {
 }
 
 func applyMigrations(ctx context.Context, adminPool *pgxpool.Pool, t *testing.T) {
+	var regclass *string
+	if err := adminPool.QueryRow(ctx, "SELECT to_regclass('public.seat_inventory')::text").Scan(&regclass); err == nil && regclass != nil {
+		return
+	}
 	files := []string{
 		"000001_init_tenancy_and_rls.up.sql",
 		"002_fleet_routes_stops.sql",
@@ -66,6 +70,10 @@ func applyMigrations(ctx context.Context, adminPool *pgxpool.Pool, t *testing.T)
 			t.Fatalf("failed to locate migration file %s", file)
 		}
 		if _, err := adminPool.Exec(ctx, string(content)); err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+				continue
+			}
 			t.Fatalf("failed to execute migration %s: %v", file, err)
 		}
 	}
