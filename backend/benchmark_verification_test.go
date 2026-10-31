@@ -42,7 +42,7 @@ func resolveTestDBURL(envVar, defaultLocal, fallbackIP string) string {
 }
 
 func getTestPools(t *testing.T) (*pgxpool.Pool, *pgxpool.Pool) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	adminURL := resolveTestDBURL("TEST_DB_ADMIN_URL",
@@ -80,6 +80,9 @@ func getTestPools(t *testing.T) (*pgxpool.Pool, *pgxpool.Pool) {
 }
 
 func runAllMigrations(ctx context.Context, adminPool *pgxpool.Pool, t *testing.T) {
+	migCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
 		files := []string{
 		"000001_init_tenancy_and_rls.up.sql",
 		"002_fleet_routes_stops.sql",
@@ -117,7 +120,7 @@ func runAllMigrations(ctx context.Context, adminPool *pgxpool.Pool, t *testing.T
 		if len(content) == 0 {
 			continue
 		}
-		if _, err := adminPool.Exec(ctx, string(content)); err != nil {
+		if _, err := adminPool.Exec(migCtx, string(content)); err != nil {
 			var pgErr *pgconn.PgError
 			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 				continue

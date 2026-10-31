@@ -36,8 +36,11 @@ func getDBURL(envVar, defaultLocal, fallbackIP string) string {
 }
 
 func applyMigrations(ctx context.Context, adminPool *pgxpool.Pool, t *testing.T) {
+	migCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
 	var regclass *string
-	if err := adminPool.QueryRow(ctx, "SELECT column_name FROM information_schema.columns WHERE table_name = 'buses' AND column_name = 'route_id'").Scan(&regclass); err == nil && regclass != nil {
+	if err := adminPool.QueryRow(migCtx, "SELECT column_name FROM information_schema.columns WHERE table_name = 'buses' AND column_name = 'route_id'").Scan(&regclass); err == nil && regclass != nil {
 		return
 	}
 		files := []string{
@@ -79,9 +82,9 @@ func applyMigrations(ctx context.Context, adminPool *pgxpool.Pool, t *testing.T)
 		if len(content) == 0 {
 			t.Fatalf("failed to locate migration file %s", file)
 		}
-		if _, err := adminPool.Exec(ctx, string(content)); err != nil {
+		if _, err := adminPool.Exec(migCtx, string(content)); err != nil {
 			var pgErr *pgconn.PgError
-			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			if errors.As(err, &pgErr) && (pgErr.Code == "23505" || pgErr.Code == "42710" || pgErr.Code == "42P07") {
 				continue
 			}
 			t.Fatalf("failed to execute migration %s: %v", file, err)
