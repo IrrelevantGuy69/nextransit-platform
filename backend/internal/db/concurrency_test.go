@@ -29,11 +29,18 @@ func TestConcurrentSeatBookingRaceCondition(t *testing.T) {
 	)
 
 	adminPool, err := pgxpool.New(ctx, adminURL)
-	if err != nil {
-		t.Fatalf("failed to connect as admin: %v", err)
+	if err != nil || adminPool.Ping(ctx) != nil {
+		t.Skip("database not available")
+		return
 	}
 
 	applyMigrations(ctx, adminPool, t)
+
+	appPool, err := pgxpool.New(ctx, appURL)
+	if err != nil || appPool.Ping(ctx) != nil {
+		t.Skip("app database not available")
+		return
+	}
 
 	tenantID := uuid.New().String()
 	busID := uuid.New().String()

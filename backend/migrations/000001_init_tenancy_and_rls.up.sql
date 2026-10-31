@@ -39,8 +39,8 @@ DROP POLICY IF EXISTS tenant_isolation_policy ON users;
 CREATE POLICY tenant_isolation_policy ON users
     FOR ALL
     TO app_user
-    USING (current_setting('app.current_tenant', true) = 'SUPER_ADMIN' OR tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
-    WITH CHECK (current_setting('app.current_tenant', true) = 'SUPER_ADMIN' OR tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
+    USING (CASE WHEN current_setting('app.current_tenant', true) = 'SUPER_ADMIN' THEN true WHEN current_setting('app.current_tenant', true) ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' THEN tenant_id = current_setting('app.current_tenant', true)::uuid ELSE false END)
+    WITH CHECK (CASE WHEN current_setting('app.current_tenant', true) = 'SUPER_ADMIN' THEN true WHEN current_setting('app.current_tenant', true) ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' THEN tenant_id = current_setting('app.current_tenant', true)::uuid ELSE false END);
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON tenants TO app_user;
 GRANT SELECT, INSERT, UPDATE, DELETE ON users TO app_user;

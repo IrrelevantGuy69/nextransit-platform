@@ -30,6 +30,7 @@ export interface LoginRequest {
   tenant_id?: string;
   tenant_slug?: string;
   workspace_slug?: string;
+  workspace_id?: string;
 }
 
 export interface SignUpRequest {
