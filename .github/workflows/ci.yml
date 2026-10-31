@@ -65,7 +65,13 @@ jobs:
           TEST_DB_APP_URL: postgres://app_user:app_password@localhost:5432/transit_db?sslmode=disable
           REDIS_URL: redis://localhost:6379
           JWT_SECRET: production-grade-ci-test-secret-key-32b!
-        run: go test -v -count=1 ./...
+        run: |
+          if ! go test -v -count=1 ./... > test.log 2>&1; then
+            cat test.log
+            ERR_MSG=$(tail -n 25 test.log | tr '\n' ' ')
+            echo "::error title=GoTestFailure::$ERR_MSG"
+            exit 1
+          fi
 
   frontend-typecheck:
     name: Frontend TypeScript Verification
