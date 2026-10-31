@@ -1,3 +1,13 @@
+CREATE TABLE IF NOT EXISTS trips (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    bus_id UUID NOT NULL REFERENCES buses(id) ON DELETE CASCADE,
+    route_id UUID NOT NULL REFERENCES routes(id) ON DELETE CASCADE,
+    departure_time TIMESTAMPTZ NOT NULL,
+    status TEXT NOT NULL DEFAULT 'SCHEDULED',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS driver_telemetry_queue (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
