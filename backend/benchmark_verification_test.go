@@ -79,54 +79,69 @@ func getTestPools(t *testing.T) (*pgxpool.Pool, *pgxpool.Pool) {
 	return adminPool, appPool
 }
 
+var benchMigrationOnce sync.Once
+
 func runAllMigrations(ctx context.Context, adminPool *pgxpool.Pool, t *testing.T) {
-	migCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+	benchMigrationOnce.Do(func() {
+		migCtx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+
+		var locked bool
+		_ = adminPool.QueryRow(migCtx, "SELECT pg_advisory_lock(987654321)").Scan(&locked)
+		defer func() {
+			_, _ = adminPool.Exec(context.Background(), "SELECT pg_advisory_unlock(987654321)")
+		}()
+
+		var regclass *string
+		if err := adminPool.QueryRow(migCtx, "SELECT column_name FROM information_schema.columns WHERE table_name = 'buses' AND column_name = 'route_id'").Scan(&regclass); err == nil && regclass != nil {
+			return
+		}
 
 		files := []string{
-		"000001_init_tenancy_and_rls.up.sql",
-		"002_fleet_routes_stops.sql",
-		"003_telemetry_and_etas.sql",
-		"004_seed_5_curated_tenants.sql",
-		"005_trip_lifecycle_geofences_etas.sql",
-		"006_offline_driver_sync.sql",
-		"006_seat_reservations_concurrency.sql",
-		"007_phase8_security_audit.sql",
-		"008_auth_credentials.sql",
-		"008_malaysian_university_operators.sql",
-		"009_seed_5_global_university_networks.sql",
-		"010_detour_waitlist_sectors_qr.sql",
-		"011_seed_multi_sector_workspaces.sql",
-		"012_expanded_multisector_routes_detour.sql",
-		"013_fix_user_demo_passwords.sql",
-		"014_route_variants_and_traffic_engine.sql",
-		"015_enforce_5_buses_5_routes_per_workspace.sql",
-		"016_clean_slate_map_architecture.sql",
-	}
+			"000001_init_tenancy_and_rls.up.sql",
+			"002_fleet_routes_stops.sql",
+			"003_telemetry_and_etas.sql",
+			"004_seed_5_curated_tenants.sql",
+			"005_trip_lifecycle_geofences_etas.sql",
+			"006_offline_driver_sync.sql",
+			"006_seat_reservations_concurrency.sql",
+			"007_phase8_security_audit.sql",
+			"008_auth_credentials.sql",
+			"008_malaysian_university_operators.sql",
+			"009_seed_5_global_university_networks.sql",
+			"010_detour_waitlist_sectors_qr.sql",
+			"011_seed_multi_sector_workspaces.sql",
+			"012_expanded_multisector_routes_detour.sql",
+			"013_fix_user_demo_passwords.sql",
+			"014_route_variants_and_traffic_engine.sql",
+			"015_enforce_5_buses_5_routes_per_workspace.sql",
+			"016_clean_slate_map_architecture.sql",
+		}
 		prefixes := []string{
-		"../../migrations/",
-		"../migrations/",
-		"migrations/",
-		"backend/migrations/",
-	}
-	for _, file := range files {
-		var content []byte
-		for _, prefix := range prefixes {
-			if data, err := os.ReadFile(prefix + file); err == nil {
-				content = data
-				break
+			"../../migrations/",
+			"../migrations/",
+			"migrations/",
+			"backend/migrations/",
+		}
+		for _, file := range files {
+			var content []byte
+			for _, prefix := range prefixes {
+				if data, err := os.ReadFile(prefix + file); err == nil {
+					content = data
+					break
+				}
 			}
-		}
-		if len(content) == 0 {
-			continue
-		}
-		if _, err := adminPool.Exec(migCtx, string(content)); err != nil {
-			var pgErr *pgconn.PgError
-			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			if len(content) == 0 {
 				continue
 			}
+			if _, err := adminPool.Exec(migCtx, string(content)); err != nil {
+				var pgErr *pgconn.PgError
+				if errors.As(err, &pgErr) && (pgErr.Code == "23505" || pgErr.Code == "42710" || pgErr.Code == "42P07" || pgErr.Code == "23503") {
+					continue
+				}
+			}
 		}
-	}
+	})
 }
 
 type TestTokenBucket struct {
