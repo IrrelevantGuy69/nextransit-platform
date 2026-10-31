@@ -62,7 +62,7 @@ jobs:
         env:
           DATABASE_URL: postgres://postgres:password@localhost:5432/transit_db?sslmode=disable
           TEST_DB_ADMIN_URL: postgres://postgres:password@localhost:5432/transit_db?sslmode=disable
-          TEST_DB_APP_URL: postgres://postgres:password@localhost:5432/transit_db?sslmode=disable
+          TEST_DB_APP_URL: postgres://app_user:app_password@localhost:5432/transit_db?sslmode=disable
           REDIS_URL: redis://localhost:6379
           JWT_SECRET: production-grade-ci-test-secret-key-32b!
         run: go test -v -count=1 ./...

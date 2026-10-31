@@ -18,8 +18,8 @@ ALTER TABLE api_keys FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation_api_keys ON api_keys;
 CREATE POLICY tenant_isolation_api_keys ON api_keys
     FOR ALL
-    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
-    WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
+    USING (CASE WHEN current_setting('app.current_tenant', true) = 'SUPER_ADMIN' THEN true WHEN current_setting('app.current_tenant', true) ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' THEN tenant_id = current_setting('app.current_tenant', true)::uuid ELSE false END)
+    WITH CHECK (CASE WHEN current_setting('app.current_tenant', true) = 'SUPER_ADMIN' THEN true WHEN current_setting('app.current_tenant', true) ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' THEN tenant_id = current_setting('app.current_tenant', true)::uuid ELSE false END);
 
 GRANT ALL PRIVILEGES ON api_keys TO app_user;
 
@@ -44,7 +44,7 @@ ALTER TABLE audit_logs FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation_audit_logs ON audit_logs;
 CREATE POLICY tenant_isolation_audit_logs ON audit_logs
     FOR ALL
-    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
-    WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
+    USING (CASE WHEN current_setting('app.current_tenant', true) = 'SUPER_ADMIN' THEN true WHEN current_setting('app.current_tenant', true) ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' THEN tenant_id = current_setting('app.current_tenant', true)::uuid ELSE false END)
+    WITH CHECK (CASE WHEN current_setting('app.current_tenant', true) = 'SUPER_ADMIN' THEN true WHEN current_setting('app.current_tenant', true) ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' THEN tenant_id = current_setting('app.current_tenant', true)::uuid ELSE false END);
 
 GRANT ALL PRIVILEGES ON audit_logs TO app_user;

@@ -57,6 +57,40 @@ func AuthMiddleware(validator auth.TokenValidator) func(next http.Handler) http.
 	}
 }
 
+func OptionalAuthMiddleware(validator auth.TokenValidator) func(next http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var tokenString string
+			authHeader := r.Header.Get("Authorization")
+			if authHeader != "" {
+				parts := strings.SplitN(authHeader, " ", 2)
+				if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
+					tokenString = parts[1]
+				}
+			}
+			if tokenString == "" {
+				if cookie, err := r.Cookie("auth_token"); err == nil {
+					tokenString = cookie.Value
+				}
+			}
+
+			if tokenString != "" {
+				if claims, err := validator.ValidateToken(tokenString); err == nil {
+					ctx := r.Context()
+					ctx = context.WithValue(ctx, TenantIDKey, claims.TenantID)
+					ctx = context.WithValue(ctx, UserIDKey, claims.Subject)
+					ctx = context.WithValue(ctx, RoleKey, claims.Role)
+					ctx = context.WithValue(ctx, ClaimsKey, claims)
+					next.ServeHTTP(w, r.WithContext(ctx))
+					return
+				}
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 func RequireRole(roles ...string) func(next http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

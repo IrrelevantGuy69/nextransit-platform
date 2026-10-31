@@ -22,8 +22,8 @@ DROP POLICY IF EXISTS tenant_isolation_policy ON bus_telemetry;
 CREATE POLICY tenant_isolation_policy ON bus_telemetry
     FOR ALL
     TO app_user
-    USING (CASE WHEN current_setting('app.current_tenant', true) = 'SUPER_ADMIN' THEN true ELSE tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid END)
-    WITH CHECK (CASE WHEN current_setting('app.current_tenant', true) = 'SUPER_ADMIN' THEN true ELSE tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid END);
+    USING (CASE WHEN current_setting('app.current_tenant', true) = 'SUPER_ADMIN' THEN true WHEN current_setting('app.current_tenant', true) ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' THEN tenant_id = current_setting('app.current_tenant', true)::uuid ELSE false END)
+    WITH CHECK (CASE WHEN current_setting('app.current_tenant', true) = 'SUPER_ADMIN' THEN true WHEN current_setting('app.current_tenant', true) ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' THEN tenant_id = current_setting('app.current_tenant', true)::uuid ELSE false END);
 
 GRANT SELECT, INSERT ON bus_telemetry TO app_user;
 

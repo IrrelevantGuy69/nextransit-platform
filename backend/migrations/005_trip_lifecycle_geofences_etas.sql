@@ -24,8 +24,8 @@ DROP POLICY IF EXISTS tenant_isolation_policy ON transit_events;
 CREATE POLICY tenant_isolation_policy ON transit_events
     FOR ALL
     TO app_user
-    USING (CASE WHEN current_setting('app.current_tenant', true) = 'SUPER_ADMIN' THEN true ELSE tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid END)
-    WITH CHECK (CASE WHEN current_setting('app.current_tenant', true) = 'SUPER_ADMIN' THEN true ELSE tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid END);
+    USING (CASE WHEN current_setting('app.current_tenant', true) = 'SUPER_ADMIN' THEN true WHEN current_setting('app.current_tenant', true) ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' THEN tenant_id = current_setting('app.current_tenant', true)::uuid ELSE false END)
+    WITH CHECK (CASE WHEN current_setting('app.current_tenant', true) = 'SUPER_ADMIN' THEN true WHEN current_setting('app.current_tenant', true) ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' THEN tenant_id = current_setting('app.current_tenant', true)::uuid ELSE false END);
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON transit_events TO app_user;
 
@@ -48,8 +48,8 @@ DROP POLICY IF EXISTS tenant_isolation_policy ON route_segment_stats;
 CREATE POLICY tenant_isolation_policy ON route_segment_stats
     FOR ALL
     TO app_user
-    USING (CASE WHEN current_setting('app.current_tenant', true) = 'SUPER_ADMIN' THEN true ELSE tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid END)
-    WITH CHECK (CASE WHEN current_setting('app.current_tenant', true) = 'SUPER_ADMIN' THEN true ELSE tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid END);
+    USING (CASE WHEN current_setting('app.current_tenant', true) = 'SUPER_ADMIN' THEN true WHEN current_setting('app.current_tenant', true) ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' THEN tenant_id = current_setting('app.current_tenant', true)::uuid ELSE false END)
+    WITH CHECK (CASE WHEN current_setting('app.current_tenant', true) = 'SUPER_ADMIN' THEN true WHEN current_setting('app.current_tenant', true) ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' THEN tenant_id = current_setting('app.current_tenant', true)::uuid ELSE false END);
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON route_segment_stats TO app_user;
 

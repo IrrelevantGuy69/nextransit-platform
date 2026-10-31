@@ -821,6 +821,21 @@ func main() {
 		r.Post("/trips/check-in", srv.handleCheckInQR)
 
 		r.Group(func(r chi.Router) {
+			r.Use(middleware.OptionalAuthMiddleware(srv.jwtManager))
+
+			r.Get("/buses", srv.handleListBuses)
+			r.Get("/stops", srv.handleListStops)
+			r.Get("/routes", srv.handleListRoutes)
+			r.Get("/routes/{routeID}/etas", srv.handleRouteETAs)
+			r.Get("/telemetry/latest", srv.handleLatestTelemetry)
+			r.Get("/telemetry/etas", srv.handleAllETAs)
+			r.Get("/trips", srv.handleListTrips)
+			r.Get("/trips/{tripID}/seats", srv.handleGetSeats)
+			r.Get("/events", srv.handleListEvents)
+			r.Get("/audit-logs", srv.handleListAuditLogs)
+		})
+
+		r.Group(func(r chi.Router) {
 			r.Use(middleware.AuthMiddleware(srv.jwtManager))
 
 			r.With(middleware.RequireRole(auth.RoleSuperAdmin, auth.RoleOperatorAdmin)).Post("/tenants", srv.handleCreateTenant)
@@ -828,35 +843,23 @@ func main() {
 			r.Get("/users", srv.handleListUsers)
 			r.Post("/users", srv.handleCreateUser)
 
-			r.Get("/buses", srv.handleListBuses)
 			r.Post("/buses", srv.handleCreateBus)
-
-			r.Get("/stops", srv.handleListStops)
 			r.Post("/stops", srv.handleCreateStop)
-
-			r.Get("/routes", srv.handleListRoutes)
 			r.Post("/routes", srv.handleCreateRoute)
-			r.Get("/routes/{routeID}/etas", srv.handleRouteETAs)
 
 			r.Group(func(r chi.Router) {
 				r.Use(srv.rateLimitMiddleware)
 				r.Post("/telemetry", srv.handleIngestTelemetry)
-				r.Get("/telemetry/latest", srv.handleLatestTelemetry)
-				r.Get("/telemetry/etas", srv.handleAllETAs)
 				r.Post("/telemetry/simulate-step", srv.handleSimulateStep)
 				r.Post("/telemetry/reset-trip", srv.handleResetTrip)
 				r.Get("/telemetry/stream", srv.handleTelemetryStream)
 
-				r.Get("/trips", srv.handleListTrips)
-				r.Get("/trips/{tripID}/seats", srv.handleGetSeats)
 				r.Post("/trips/{tripID}/hold-seat", srv.handleHoldSeat)
 				r.Post("/trips/{tripID}/book-seat", srv.handleBookSeat)
 				r.Post("/trips/{tripID}/simulate-concurrency-clash", srv.handleSimulateConcurrencyClash)
 			})
 
-			r.Get("/events", srv.handleListEvents)
 			r.Post("/driver/sync-batch", srv.handleDriverSyncBatch)
-			r.Get("/audit-logs", srv.handleListAuditLogs)
 			r.Post("/system/load-test", srv.handleLoadTest)
 		})
 	})
@@ -3039,9 +3042,9 @@ func generateArterialRoadPolyline(stops [][]float64, pointsPerSeg int) [][]float
 		pointsPerSeg = 20
 	}
 	var res [][]float64
-	for i := 0; i < n; i++ {
+	for i := 0; i < n-1; i++ {
 		p1 := stops[i]
-		p2 := stops[(i+1)%n]
+		p2 := stops[i+1]
 		dLat := p2[0] - p1[0]
 		dLng := p2[1] - p1[1]
 
@@ -3064,8 +3067,8 @@ func generateArterialRoadPolyline(stops [][]float64, pointsPerSeg int) [][]float
 			res = append(res, []float64{lat, lng})
 		}
 	}
-	if len(res) > 0 {
-		res = append(res, []float64{res[0][0], res[0][1]})
+	if len(stops) > 0 {
+		res = append(res, []float64{stops[len(stops)-1][0], stops[len(stops)-1][1]})
 	}
 	return res
 }
@@ -5486,9 +5489,8 @@ func (s *Server) ensureRoutePolylinesAndTelemetry(ctx context.Context) error {
 		if len(stopCoords) >= 2 {
 			var distMeters float64
 			var durSec float64
-			loopWaypoints := append(stopCoords, stopCoords[0])
 			if s.router != nil {
-				res, err := s.router.GetMultiPointRoute(ctx, loopWaypoints)
+				res, err := s.router.GetMultiPointRoute(ctx, stopCoords)
 				if err == nil && res != nil && len(res.Coordinates) >= 15 {
 					pCoords = res.Coordinates
 					distMeters = res.DistanceMeters

@@ -63,6 +63,7 @@ export interface Bus {
   delay_minutes?: number;
   dwell_seconds?: number;
   segment_progress?: number;
+  route_id?: string;
   created_at: string;
 }
 

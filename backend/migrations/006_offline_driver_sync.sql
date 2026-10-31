@@ -23,7 +23,7 @@ ALTER TABLE driver_telemetry_queue FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation_driver_queue ON driver_telemetry_queue;
 CREATE POLICY tenant_isolation_driver_queue ON driver_telemetry_queue
     FOR ALL
-    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
-    WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
+    USING (CASE WHEN current_setting('app.current_tenant', true) = 'SUPER_ADMIN' THEN true WHEN current_setting('app.current_tenant', true) ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' THEN tenant_id = current_setting('app.current_tenant', true)::uuid ELSE false END)
+    WITH CHECK (CASE WHEN current_setting('app.current_tenant', true) = 'SUPER_ADMIN' THEN true WHEN current_setting('app.current_tenant', true) ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' THEN tenant_id = current_setting('app.current_tenant', true)::uuid ELSE false END);
 
 GRANT ALL PRIVILEGES ON driver_telemetry_queue TO app_user;

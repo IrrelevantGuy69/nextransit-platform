@@ -15,8 +15,8 @@ DROP POLICY IF EXISTS tenant_isolation_policy ON trips;
 CREATE POLICY tenant_isolation_policy ON trips
     FOR ALL
     TO app_user
-    USING (CASE WHEN current_setting('app.current_tenant', true) = 'SUPER_ADMIN' THEN true ELSE tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid END)
-    WITH CHECK (CASE WHEN current_setting('app.current_tenant', true) = 'SUPER_ADMIN' THEN true ELSE tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid END);
+    USING (CASE WHEN current_setting('app.current_tenant', true) = 'SUPER_ADMIN' THEN true WHEN current_setting('app.current_tenant', true) ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' THEN tenant_id = current_setting('app.current_tenant', true)::uuid ELSE false END)
+    WITH CHECK (CASE WHEN current_setting('app.current_tenant', true) = 'SUPER_ADMIN' THEN true WHEN current_setting('app.current_tenant', true) ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' THEN tenant_id = current_setting('app.current_tenant', true)::uuid ELSE false END);
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON trips TO app_user;
 
@@ -40,8 +40,8 @@ DROP POLICY IF EXISTS tenant_isolation_policy ON seat_inventory;
 CREATE POLICY tenant_isolation_policy ON seat_inventory
     FOR ALL
     TO app_user
-    USING (CASE WHEN current_setting('app.current_tenant', true) = 'SUPER_ADMIN' THEN true ELSE tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid END)
-    WITH CHECK (CASE WHEN current_setting('app.current_tenant', true) = 'SUPER_ADMIN' THEN true ELSE tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid END);
+    USING (CASE WHEN current_setting('app.current_tenant', true) = 'SUPER_ADMIN' THEN true WHEN current_setting('app.current_tenant', true) ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' THEN tenant_id = current_setting('app.current_tenant', true)::uuid ELSE false END)
+    WITH CHECK (CASE WHEN current_setting('app.current_tenant', true) = 'SUPER_ADMIN' THEN true WHEN current_setting('app.current_tenant', true) ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' THEN tenant_id = current_setting('app.current_tenant', true)::uuid ELSE false END);
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON seat_inventory TO app_user;
 
@@ -64,8 +64,8 @@ DROP POLICY IF EXISTS tenant_isolation_policy ON bookings;
 CREATE POLICY tenant_isolation_policy ON bookings
     FOR ALL
     TO app_user
-    USING (CASE WHEN current_setting('app.current_tenant', true) = 'SUPER_ADMIN' THEN true ELSE tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid END)
-    WITH CHECK (CASE WHEN current_setting('app.current_tenant', true) = 'SUPER_ADMIN' THEN true ELSE tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid END);
+    USING (CASE WHEN current_setting('app.current_tenant', true) = 'SUPER_ADMIN' THEN true WHEN current_setting('app.current_tenant', true) ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' THEN tenant_id = current_setting('app.current_tenant', true)::uuid ELSE false END)
+    WITH CHECK (CASE WHEN current_setting('app.current_tenant', true) = 'SUPER_ADMIN' THEN true WHEN current_setting('app.current_tenant', true) ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' THEN tenant_id = current_setting('app.current_tenant', true)::uuid ELSE false END);
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON bookings TO app_user;
 

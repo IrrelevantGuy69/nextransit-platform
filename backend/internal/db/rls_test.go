@@ -37,25 +37,35 @@ func getDBURL(envVar, defaultLocal, fallbackIP string) string {
 
 func applyMigrations(ctx context.Context, adminPool *pgxpool.Pool, t *testing.T) {
 	var regclass *string
-	if err := adminPool.QueryRow(ctx, "SELECT to_regclass('public.seat_inventory')::text").Scan(&regclass); err == nil && regclass != nil {
+	if err := adminPool.QueryRow(ctx, "SELECT column_name FROM information_schema.columns WHERE table_name = 'buses' AND column_name = 'route_id'").Scan(&regclass); err == nil && regclass != nil {
 		return
 	}
-	files := []string{
+		files := []string{
 		"000001_init_tenancy_and_rls.up.sql",
 		"002_fleet_routes_stops.sql",
 		"003_telemetry_and_etas.sql",
 		"004_seed_5_curated_tenants.sql",
 		"005_trip_lifecycle_geofences_etas.sql",
-		"006_seat_reservations_concurrency.sql",
 		"006_offline_driver_sync.sql",
+		"006_seat_reservations_concurrency.sql",
 		"007_phase8_security_audit.sql",
 		"008_auth_credentials.sql",
+		"008_malaysian_university_operators.sql",
+		"009_seed_5_global_university_networks.sql",
+		"010_detour_waitlist_sectors_qr.sql",
+		"011_seed_multi_sector_workspaces.sql",
+		"012_expanded_multisector_routes_detour.sql",
+		"013_fix_user_demo_passwords.sql",
+		"014_route_variants_and_traffic_engine.sql",
+		"015_enforce_5_buses_5_routes_per_workspace.sql",
+		"016_clean_slate_map_architecture.sql",
 	}
 
-	prefixes := []string{
+		prefixes := []string{
 		"../../migrations/",
 		"../migrations/",
 		"migrations/",
+		"backend/migrations/",
 	}
 
 	for _, file := range files {

@@ -189,8 +189,8 @@ export function RoutePanel({
   const delayDisplay = `+${(activeBus?.delay_minutes || 0).toFixed(1)}m traffic delay`;
 
   return (
-    <div className="flex flex-col h-full max-h-[calc(100vh-180px)] overflow-hidden bg-white rounded-2xl shadow-sm border border-[#E5E3DA] p-4 font-sans text-[#162A22]">
-      <div className="shrink-0 mb-3">
+    <div className="flex flex-col h-full max-h-[calc(100vh-180px)] overflow-hidden bg-white rounded-2xl shadow-sm border border-[#E5E3DA] p-3 font-sans text-[#162A22]">
+      <div className="shrink-0 mb-2">
         <div className="flex items-start justify-between gap-2">
           <div>
             <div className="flex items-center gap-1.5">
@@ -215,7 +215,7 @@ export function RoutePanel({
       </div>
 
       {activeBus && (
-        <div className="shrink-0 mb-3">
+        <div className="shrink-0 mb-2">
           <div className="rounded-xl bg-[#F7F6F2] border border-black/[0.06] p-2.5">
             <div className="flex items-center justify-between text-xs">
               <span className="flex items-center gap-1.5 font-bold text-[#162A22]">
@@ -285,7 +285,7 @@ export function RoutePanel({
           <span className="text-[10px] text-black/40">Click stop to pan</span>
         </div>
 
-        <div className="relative pl-5 space-y-2 py-0.5">
+        <div className="relative pl-5 space-y-1 py-0.5">
           <div className="absolute bottom-2 left-[7px] top-2 w-0.5 bg-black/10" />
 
           {stopRows.map((st) => {
@@ -318,7 +318,7 @@ export function RoutePanel({
               <div
                 key={st.id}
                 onClick={() => onSelectStop && onSelectStop(st.lat, st.lng)}
-                className="relative flex items-center justify-between text-xs p-1.5 rounded-xl hover:bg-black/5 cursor-pointer transition-colors"
+                className="relative flex items-center justify-between text-xs p-1 rounded-xl hover:bg-black/5 cursor-pointer transition-colors"
               >
                 <span
                   className={cn(

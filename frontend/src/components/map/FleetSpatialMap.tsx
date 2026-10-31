@@ -158,9 +158,9 @@ function generateArterialRoadSpline(points: LatLngTuple[], pointsPerSeg: number 
   const n = valid.length;
   const result: LatLngTuple[] = [];
 
-  for (let i = 0; i < n; i++) {
+  for (let i = 0; i < n - 1; i++) {
     const p1 = valid[i];
-    const p2 = valid[(i + 1) % n];
+    const p2 = valid[i + 1];
     const dLat = p2[0] - p1[0];
     const dLng = p2[1] - p1[1];
 
@@ -189,8 +189,8 @@ function generateArterialRoadSpline(points: LatLngTuple[], pointsPerSeg: number 
     }
   }
 
-  if (result.length > 0) {
-    result.push([result[0][0], result[0][1]]);
+  if (valid.length > 0) {
+    result.push([valid[valid.length - 1][0], valid[valid.length - 1][1]]);
   }
   return result;
 }
@@ -316,11 +316,10 @@ export default function FleetSpatialMap({
       }
 
       if (orderedStops.length < 2) {
+        const routeNumStr = String(idx + 1).padStart(4, '0');
         const matchedStops = safeStops.filter((s) => {
           if (!s || !isValidLatLng(s.latitude, s.longitude)) return false;
-          const tenantMatch = s.id.startsWith(rt.id.slice(0, 10));
-          const routeNumMatch = s.id.slice(18, 19) === String(idx + 1);
-          return tenantMatch && routeNumMatch;
+          return s.id.slice(14, 18) === routeNumStr;
         });
         if (matchedStops.length >= 2) {
           orderedStops = matchedStops;
@@ -329,7 +328,7 @@ export default function FleetSpatialMap({
 
       if (orderedStops.length < 2) {
         const validStops = safeStops.filter((s) => s && isValidLatLng(s.latitude, s.longitude));
-        const perRoute = Math.max(1, Math.floor(validStops.length / Math.max(1, safeRoutes.length)));
+        const perRoute = Math.max(2, Math.floor(validStops.length / Math.max(1, safeRoutes.length)));
         orderedStops = validStops.slice(idx * perRoute, (idx + 1) * perRoute);
       }
 
