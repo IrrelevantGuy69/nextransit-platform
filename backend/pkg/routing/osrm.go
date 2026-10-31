@@ -257,33 +257,34 @@ func (c *Client) fallbackMultiPointRoute(waypoints [][2]float64) *RouteResult {
 }
 
 func (c *Client) fallbackRoute(fromLat, fromLng, toLat, toLng float64) *RouteResult {
-	midLat := (fromLat + toLat) / 2.0
-	midLng := (fromLng + toLng) / 2.0
-	deltaLat := toLat - fromLat
-	deltaLng := toLng - fromLng
-
-	perpLat := -deltaLng * 0.35
-	perpLng := deltaLat * 0.35
-
-	wp1Lat := fromLat + deltaLat*0.25 + perpLat*0.5
-	wp1Lng := fromLng + deltaLng*0.25 + perpLng*0.5
-
-	wp2Lat := midLat + perpLat
-	wp2Lng := midLng + perpLng
-
-	wp3Lat := fromLat + deltaLat*0.75 + perpLat*0.5
-	wp3Lng := fromLng + deltaLng*0.75 + perpLng*0.5
-
-	coords := [][]float64{
-		{fromLat, fromLng},
-		{wp1Lat, wp1Lng},
-		{wp2Lat, wp2Lng},
-		{wp3Lat, wp3Lng},
-		{toLat, toLng},
-	}
-
-	dist := HaversineDistanceMeters(fromLat, fromLng, toLat, toLng) * 1.30
+	dLat := toLat - fromLat
+	dLng := toLng - fromLng
+	dist := HaversineDistanceMeters(fromLat, fromLng, toLat, toLng) * 1.35
 	dur := (dist / 1000.0) / 32.0 * 3600.0
+
+	steps := 16
+	coords := make([][]float64, 0, steps+1)
+	coords = append(coords, []float64{fromLat, fromLng})
+
+	for i := 1; i < steps; i++ {
+		t := float64(i) / float64(steps)
+		var lat, lng float64
+		if t <= 0.45 {
+			s := t / 0.45
+			lat = fromLat + dLat*s*0.92
+			lng = fromLng + dLng*s*0.08
+		} else if t <= 0.55 {
+			s := (t - 0.45) / 0.10
+			lat = fromLat + dLat*(0.92+s*0.04)
+			lng = fromLng + dLng*(0.08+s*0.84)
+		} else {
+			s := (t - 0.55) / 0.45
+			lat = fromLat + dLat*(0.96+s*0.04)
+			lng = fromLng + dLng*(0.92+s*0.08)
+		}
+		coords = append(coords, []float64{lat, lng})
+	}
+	coords = append(coords, []float64{toLat, toLng})
 
 	return &RouteResult{
 		Coordinates:     coords,

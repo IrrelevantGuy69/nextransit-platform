@@ -152,35 +152,36 @@ export function sampleArcLength(
   return { lat, lng, heading };
 }
 
-function generateClosedSpline(points: LatLngTuple[], numSegments: number = 24): LatLngTuple[] {
+function generateArterialRoadSpline(points: LatLngTuple[], pointsPerSeg: number = 20): LatLngTuple[] {
   const valid = points.filter((p) => Array.isArray(p) && p.length >= 2 && isValidLatLng(p[0], p[1]));
   if (valid.length < 2) return valid;
   const n = valid.length;
   const result: LatLngTuple[] = [];
 
   for (let i = 0; i < n; i++) {
-    const p0 = valid[(i - 1 + n) % n];
     const p1 = valid[i];
     const p2 = valid[(i + 1) % n];
-    const p3 = valid[(i + 2) % n];
+    const dLat = p2[0] - p1[0];
+    const dLng = p2[1] - p1[1];
 
-    for (let j = 0; j < numSegments; j++) {
-      const t = j / numSegments;
-      const t2 = t * t;
-      const t3 = t2 * t;
+    for (let s = 0; s < pointsPerSeg; s++) {
+      const t = s / pointsPerSeg;
+      let lat: number;
+      let lng: number;
 
-      const lat =
-        0.5 *
-        (2 * p1[0] +
-          (-p0[0] + p2[0]) * t +
-          (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2 +
-          (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3);
-      const lng =
-        0.5 *
-        (2 * p1[1] +
-          (-p0[1] + p2[1]) * t +
-          (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2 +
-          (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3);
+      if (t <= 0.45) {
+        const factor = t / 0.45;
+        lat = p1[0] + dLat * factor * 0.92;
+        lng = p1[1] + dLng * factor * 0.08;
+      } else if (t <= 0.55) {
+        const factor = (t - 0.45) / 0.10;
+        lat = p1[0] + dLat * (0.92 + factor * 0.04);
+        lng = p1[1] + dLng * (0.08 + factor * 0.84);
+      } else {
+        const factor = (t - 0.55) / 0.45;
+        lat = p1[0] + dLat * (0.96 + factor * 0.04);
+        lng = p1[1] + dLng * (0.92 + factor * 0.08);
+      }
 
       if (isValidLatLng(lat, lng)) {
         result.push([lat, lng]);
@@ -192,6 +193,10 @@ function generateClosedSpline(points: LatLngTuple[], numSegments: number = 24): 
     result.push([result[0][0], result[0][1]]);
   }
   return result;
+}
+
+function generateClosedSpline(points: LatLngTuple[], numSegments: number = 20): LatLngTuple[] {
+  return generateArterialRoadSpline(points, numSegments);
 }
 
 export interface RouteGeometryItem {
@@ -273,11 +278,6 @@ export default function FleetSpatialMap({
   const mapRef = useRef<LeafletMap | null>(null);
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
 
-  const busProgressRef = useRef<Record<string, number>>({});
-  const initialPositionsRef = useRef<Record<string, LatLngTuple>>({});
-  const markerInstancesRef = useRef<Record<string, L.Marker | null>>({});
-  const headingElementsRef = useRef<Record<string, HTMLElement | null>>({});
-
   const safeStops = stops || [];
   const safeRoutes = routes || [];
   const safeSnapshots = snapshots || [];
@@ -315,7 +315,19 @@ export default function FleetSpatialMap({
         }
       }
 
-      if (orderedStops.length === 0) {
+      if (orderedStops.length < 2) {
+        const matchedStops = safeStops.filter((s) => {
+          if (!s || !isValidLatLng(s.latitude, s.longitude)) return false;
+          const tenantMatch = s.id.startsWith(rt.id.slice(0, 10));
+          const routeNumMatch = s.id.slice(18, 19) === String(idx + 1);
+          return tenantMatch && routeNumMatch;
+        });
+        if (matchedStops.length >= 2) {
+          orderedStops = matchedStops;
+        }
+      }
+
+      if (orderedStops.length < 2) {
         const validStops = safeStops.filter((s) => s && isValidLatLng(s.latitude, s.longitude));
         const perRoute = Math.max(1, Math.floor(validStops.length / Math.max(1, safeRoutes.length)));
         orderedStops = validStops.slice(idx * perRoute, (idx + 1) * perRoute);
@@ -324,18 +336,18 @@ export default function FleetSpatialMap({
       const stopTuples = orderedStops.map((s) => [s.latitude, s.longitude] as LatLngTuple);
 
       let primaryCoords: LatLngTuple[] = [];
-      if (rt.primary_polyline && Array.isArray(rt.primary_polyline) && rt.primary_polyline.length >= 2) {
+      if (rt.primary_polyline && Array.isArray(rt.primary_polyline) && rt.primary_polyline.length >= 15) {
         primaryCoords = rt.primary_polyline.filter((pt) => isValidLatLng(pt[0], pt[1])) as LatLngTuple[];
       }
-      if (primaryCoords.length < 2) {
-        primaryCoords = generateClosedSpline(stopTuples, 25);
+      if (primaryCoords.length < 15) {
+        primaryCoords = generateArterialRoadSpline(stopTuples, 20);
       }
 
       let alternateCoords: LatLngTuple[] = [];
-      if (rt.alternate_polyline && Array.isArray(rt.alternate_polyline) && rt.alternate_polyline.length >= 2) {
+      if (rt.alternate_polyline && Array.isArray(rt.alternate_polyline) && rt.alternate_polyline.length >= 15) {
         alternateCoords = rt.alternate_polyline.filter((pt) => isValidLatLng(pt[0], pt[1])) as LatLngTuple[];
       }
-      if (alternateCoords.length < 2 && primaryCoords.length >= 2) {
+      if (alternateCoords.length < 15 && primaryCoords.length >= 2) {
         alternateCoords = primaryCoords.map((pt, i) => {
           const t = i / primaryCoords.length;
           if (t > 0.25 && t < 0.75) {
@@ -362,105 +374,10 @@ export default function FleetSpatialMap({
     });
   }, [safeRoutes, safeStops, safeEtas]);
 
-  const arcTables = useMemo(() => {
-    const map = new Map<string, ArcLengthTable>();
-    for (const rg of routeGeometries) {
-      map.set(`${rg.route.id}-pri`, rg.primaryTable);
-      map.set(`${rg.route.id}-alt`, rg.alternateTable);
-      map.set(rg.route.id, rg.primaryTable);
-    }
-    return map;
-  }, [routeGeometries]);
-
-  useEffect(() => {
-    const STAGGERED = [0.05, 0.25, 0.45, 0.65, 0.82];
-    safeSnapshots.forEach((bus, idx) => {
-      if (!bus || !bus.bus_id) return;
-      if (busProgressRef.current[bus.bus_id] === undefined) {
-        if (typeof bus.route_progress === 'number' && bus.route_progress >= 0 && bus.route_progress <= 1) {
-          busProgressRef.current[bus.bus_id] = bus.route_progress;
-        } else {
-          busProgressRef.current[bus.bus_id] = STAGGERED[idx % STAGGERED.length];
-        }
-      }
-    });
-  }, [safeSnapshots]);
-
-  useEffect(() => {
-    let animId: number;
-    let lastTime = performance.now();
-
-    const tick = (now: number) => {
-      const dtSeconds = Math.min(0.1, (now - lastTime) / 1000);
-      lastTime = now;
-
-      if (isSimulating) {
-        safeSnapshots.forEach((bus) => {
-          if (!bus || !bus.bus_id) return;
-          const isAlt = bus.route_variant === 'ALTERNATE_ROUTE_2' || bus.is_detour;
-          const table =
-            arcTables.get(`${bus.route_id || 'fallback'}-${isAlt ? 'alt' : 'pri'}`) ||
-            arcTables.get(`${bus.route_id || 'fallback'}-pri`) ||
-            routeGeometries[0]?.primaryTable;
-
-          if (!table || table.totalDist <= 0) return;
-
-          const routeTotalKm = table.totalDist / 1000.0;
-          const speedKmh = Math.max(12, bus.speed_kmh || 38.0);
-          const currentProg = busProgressRef.current[bus.bus_id] ?? 0.05;
-          const nextProg = (currentProg + (speedKmh / 3600.0) * dtSeconds / routeTotalKm) % 1.0;
-          busProgressRef.current[bus.bus_id] = nextProg >= 0 ? nextProg : nextProg + 1.0;
-
-          const sampled = sampleArcLength(table, busProgressRef.current[bus.bus_id]);
-          const marker = markerInstancesRef.current[bus.bus_id];
-          if (marker && isValidLatLng(sampled.lat, sampled.lng)) {
-            marker.setLatLng([sampled.lat, sampled.lng]);
-          }
-
-          const headingEl = headingElementsRef.current[bus.bus_id];
-          if (headingEl) {
-            headingEl.style.transform = `rotate(${Math.round(sampled.heading)}deg)`;
-          }
-
-          if (followBus && selectedBusId === bus.bus_id && mapRef.current && isValidLatLng(sampled.lat, sampled.lng)) {
-            mapRef.current.panTo([sampled.lat, sampled.lng], { animate: false });
-          }
-        });
-      } else {
-        safeSnapshots.forEach((bus) => {
-          if (!bus || !bus.bus_id) return;
-          const isAlt = bus.route_variant === 'ALTERNATE_ROUTE_2' || bus.is_detour;
-          const table =
-            arcTables.get(`${bus.route_id || 'fallback'}-${isAlt ? 'alt' : 'pri'}`) ||
-            arcTables.get(`${bus.route_id || 'fallback'}-pri`) ||
-            routeGeometries[0]?.primaryTable;
-          if (!table || table.totalDist <= 0) return;
-          const sampled = sampleArcLength(table, busProgressRef.current[bus.bus_id] ?? 0.05);
-          const marker = markerInstancesRef.current[bus.bus_id];
-          if (marker && isValidLatLng(sampled.lat, sampled.lng)) {
-            marker.setLatLng([sampled.lat, sampled.lng]);
-          }
-        });
-      }
-
-      animId = requestAnimationFrame(tick);
-    };
-
-    animId = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(animId);
-  }, [isSimulating, followBus, selectedBusId, safeSnapshots, arcTables, routeGeometries]);
-
   const visibleGeometries = useMemo(() => {
     if (selectedRouteId === 'all') return routeGeometries;
     return routeGeometries.filter((rg) => rg.route.id === selectedRouteId);
   }, [routeGeometries, selectedRouteId]);
-
-  const isBusSelected = Boolean(
-    selectedBusId &&
-    selectedBusId !== 'ALL' &&
-    selectedBusId !== 'all' &&
-    selectedBusId !== ''
-  );
 
   const visibleBuses = useMemo(() => {
     return safeSnapshots.filter((bus) => {
@@ -669,85 +586,242 @@ export default function FleetSpatialMap({
             });
           })}
 
-        {visibleBuses.map((bus) => {
-          const matchedRg =
-            routeGeometries.find((r) => r.route.id === bus.route_id) || routeGeometries[0];
-          const color = matchedRg ? matchedRg.color : ROUTE_PALETTE[0];
-          const isSelected =
-            isBusSelected &&
-            (bus.bus_id === selectedBusId ||
-              bus.fleet_code === selectedBusId ||
-              ('id' in bus && (bus as Record<string, unknown>).id === selectedBusId));
-          const isCompleted =
-            bus.bus_status === 'COMPLETED' || bus.trip_status === 'JOURNEY_ENDED';
-          const isDelayed =
-            (bus.delay_minutes !== undefined && bus.delay_minutes > 0.1) ||
-            bus.route_variant === 'ALTERNATE_ROUTE_2' ||
-            bus.is_detour;
-
-          if (!initialPositionsRef.current[bus.bus_id]) {
-            const table = matchedRg?.primaryTable;
-            const initialProg = busProgressRef.current[bus.bus_id] ?? 0.05;
-            if (table && table.totalDist > 0) {
-              const pt = sampleArcLength(table, initialProg);
-              if (isValidLatLng(pt.lat, pt.lng)) {
-                initialPositionsRef.current[bus.bus_id] = [pt.lat, pt.lng];
-              }
-            }
-            if (!initialPositionsRef.current[bus.bus_id]) {
-              initialPositionsRef.current[bus.bus_id] = isValidLatLng(bus.latitude, bus.longitude)
-                ? [bus.latitude, bus.longitude]
-                : defaultCenter;
-            }
-          }
-
-          const staticInitialPos = initialPositionsRef.current[bus.bus_id];
-
-          const iconHtml = `
-            <div class="bus-marker ${isSelected ? 'bus-marker--selected' : ''} ${
-            isDelayed ? 'bus-marker--delayed' : ''
-          } ${isCompleted ? 'bus-marker--completed' : ''}" style="${
-            !isSelected && !isCompleted && !isDelayed ? `background-color: ${color};` : ''
-          }">
-              <span class="bus-marker__heading" style="transform: rotate(${Math.round(bus.heading_deg ?? 0)}deg);"></span>
-              ${isCompleted ? CHECK_SVG : BUS_SVG}
-              <span class="bus-marker__label">${bus.fleet_code}</span>
-            </div>
-          `;
-
-          const icon = L.divIcon({
-            className: '',
-            html: iconHtml,
-            iconSize: [36, 36],
-            iconAnchor: [18, 18],
-          });
-
-          return (
-            <Marker
-              key={`bus-marker-${bus.bus_id}`}
-              position={staticInitialPos}
-              icon={icon}
-              zIndexOffset={isSelected ? 1000 : 200}
-              ref={(m) => {
-                markerInstancesRef.current[bus.bus_id] = m;
-                if (m) {
-                  const el = m.getElement();
-                  if (el) {
-                    headingElementsRef.current[bus.bus_id] = el.querySelector(
-                      '.bus-marker__heading',
-                    ) as HTMLElement | null;
-                  }
-                }
-              }}
-              eventHandlers={{
-                click: () => onSelectBus(bus.bus_id),
-              }}
-            />
-          );
-        })}
+        <ImperativeBusMarkers
+          buses={visibleBuses}
+          routeGeometries={routeGeometries}
+          selectedBusId={selectedBusId}
+          isSimulating={isSimulating}
+          followBus={followBus}
+          onSelectBus={onSelectBus}
+          defaultCenter={defaultCenter}
+        />
       </MapContainer>
     </div>
   );
+}
+
+interface ImperativeBusMarkersProps {
+  buses: BusSnapshot[];
+  routeGeometries: RouteGeometryItem[];
+  selectedBusId?: string | null;
+  isSimulating: boolean;
+  followBus?: boolean;
+  onSelectBus?: (busId: string) => void;
+  defaultCenter: LatLngTuple;
+}
+
+function ImperativeBusMarkers({
+  buses,
+  routeGeometries,
+  selectedBusId,
+  isSimulating,
+  followBus,
+  onSelectBus,
+  defaultCenter,
+}: ImperativeBusMarkersProps) {
+  const map = useMap();
+  const markersRef = useRef<Map<string, L.Marker>>(new Map());
+  const headingElsRef = useRef<Map<string, HTMLElement>>(new Map());
+  const busProgressRef = useRef<Record<string, number>>({});
+  const propsRef = useRef({
+    buses,
+    routeGeometries,
+    selectedBusId,
+    isSimulating,
+    followBus,
+    onSelectBus,
+    defaultCenter,
+  });
+
+  propsRef.current = {
+    buses,
+    routeGeometries,
+    selectedBusId,
+    isSimulating,
+    followBus,
+    onSelectBus,
+    defaultCenter,
+  };
+
+  useEffect(() => {
+    const STAGGERED = [0.05, 0.25, 0.45, 0.65, 0.85];
+    const isBusSelected = Boolean(
+      selectedBusId &&
+      selectedBusId !== 'ALL' &&
+      selectedBusId !== 'all' &&
+      selectedBusId !== ''
+    );
+
+    buses.forEach((bus, idx) => {
+      if (!bus || !bus.bus_id) return;
+
+      const matchedRg =
+        routeGeometries.find((r) => r.route.id === bus.route_id) || routeGeometries[0];
+      const color = matchedRg ? matchedRg.color : ROUTE_PALETTE[0];
+      const isSelected =
+        isBusSelected &&
+        (bus.bus_id === selectedBusId ||
+          bus.fleet_code === selectedBusId ||
+          ('id' in bus && (bus as Record<string, unknown>).id === selectedBusId));
+      const isCompleted =
+        bus.bus_status === 'COMPLETED' || bus.trip_status === 'JOURNEY_ENDED';
+      const isDelayed =
+        (bus.delay_minutes !== undefined && bus.delay_minutes > 0.1) ||
+        bus.route_variant === 'ALTERNATE_ROUTE_2' ||
+        bus.is_detour;
+
+      if (busProgressRef.current[bus.bus_id] === undefined) {
+        if (typeof bus.route_progress === 'number' && bus.route_progress >= 0 && bus.route_progress <= 1) {
+          busProgressRef.current[bus.bus_id] = bus.route_progress;
+        } else {
+          busProgressRef.current[bus.bus_id] = STAGGERED[idx % STAGGERED.length];
+        }
+      }
+
+      const iconHtml = `
+        <div class="bus-marker ${isSelected ? 'bus-marker--selected' : ''} ${
+        isDelayed ? 'bus-marker--delayed' : ''
+      } ${isCompleted ? 'bus-marker--completed' : ''}" style="${
+        !isSelected && !isCompleted && !isDelayed ? `background-color: ${color};` : ''
+      }">
+          <span class="bus-marker__heading" style="transform: rotate(${Math.round(bus.heading_deg ?? 0)}deg);"></span>
+          ${isCompleted ? CHECK_SVG : BUS_SVG}
+          <span class="bus-marker__label">${bus.fleet_code}</span>
+        </div>
+      `;
+
+      const icon = L.divIcon({
+        className: '',
+        html: iconHtml,
+        iconSize: [36, 36],
+        iconAnchor: [18, 18],
+      });
+
+      let marker = markersRef.current.get(bus.bus_id);
+      if (!marker) {
+        let initialPos: LatLngTuple = defaultCenter;
+        const table = matchedRg?.primaryTable;
+        if (table && table.totalDist > 0) {
+          const pt = sampleArcLength(table, busProgressRef.current[bus.bus_id]);
+          if (isValidLatLng(pt.lat, pt.lng)) {
+            initialPos = [pt.lat, pt.lng];
+          }
+        } else if (isValidLatLng(bus.latitude, bus.longitude)) {
+          initialPos = [bus.latitude, bus.longitude];
+        }
+
+        marker = L.marker(initialPos, {
+          icon,
+          zIndexOffset: isSelected ? 1000 : 200,
+        }).addTo(map);
+
+        marker.on('click', () => {
+          propsRef.current.onSelectBus?.(bus.bus_id);
+        });
+
+        markersRef.current.set(bus.bus_id, marker);
+      } else {
+        marker.setIcon(icon);
+        marker.setZIndexOffset(isSelected ? 1000 : 200);
+      }
+
+      const el = marker.getElement();
+      if (el) {
+        const headingEl = el.querySelector('.bus-marker__heading') as HTMLElement | null;
+        if (headingEl) {
+          headingElsRef.current.set(bus.bus_id, headingEl);
+        }
+      }
+    });
+
+    const activeBusIds = new Set(buses.map((b) => b.bus_id));
+    markersRef.current.forEach((marker, id) => {
+      if (!activeBusIds.has(id)) {
+        marker.remove();
+        markersRef.current.delete(id);
+        headingElsRef.current.delete(id);
+      }
+    });
+  }, [buses, routeGeometries, selectedBusId, defaultCenter, map]);
+
+  useEffect(() => {
+    let animId: number;
+    let lastTime = performance.now();
+
+    const tick = (now: number) => {
+      const dtSeconds = Math.min(0.1, (now - lastTime) / 1000);
+      lastTime = now;
+
+      const { buses, routeGeometries, selectedBusId, isSimulating, followBus } = propsRef.current;
+
+      for (let i = 0; i < buses.length; i++) {
+        const bus = buses[i];
+        if (!bus || !bus.bus_id) continue;
+
+        const marker = markersRef.current.get(bus.bus_id);
+        if (!marker) continue;
+
+        const matchedRg =
+          routeGeometries.find((r) => r.route.id === bus.route_id) || routeGeometries[0];
+        if (!matchedRg) continue;
+
+        const isAlt = bus.route_variant === 'ALTERNATE_ROUTE_2' || bus.is_detour;
+        const table =
+          isAlt && matchedRg.alternateTable && matchedRg.alternateTable.totalDist > 0
+            ? matchedRg.alternateTable
+            : matchedRg.primaryTable;
+
+        if (!table || table.totalDist <= 0) continue;
+
+        const routeTotalKm = table.totalDist / 1000.0;
+        const speedKmh = Math.max(12, bus.speed_kmh || 38.0);
+
+        if (isSimulating) {
+          const currentProg = busProgressRef.current[bus.bus_id] ?? 0.05;
+          const nextProg = (currentProg + ((speedKmh / 3600.0) * dtSeconds) / routeTotalKm) % 1.0;
+          busProgressRef.current[bus.bus_id] = nextProg >= 0 ? nextProg : nextProg + 1.0;
+        }
+
+        const sampled = sampleArcLength(table, busProgressRef.current[bus.bus_id] ?? 0.05);
+        if (isValidLatLng(sampled.lat, sampled.lng)) {
+          marker.setLatLng([sampled.lat, sampled.lng]);
+        }
+
+        let headingEl = headingElsRef.current.get(bus.bus_id);
+        if (!headingEl) {
+          const el = marker.getElement();
+          if (el) {
+            headingEl = (el.querySelector('.bus-marker__heading') as HTMLElement) || undefined;
+            if (headingEl) {
+              headingElsRef.current.set(bus.bus_id, headingEl);
+            }
+          }
+        }
+        if (headingEl) {
+          headingEl.style.transform = `rotate(${Math.round(sampled.heading)}deg)`;
+        }
+
+        if (followBus && selectedBusId === bus.bus_id && isValidLatLng(sampled.lat, sampled.lng)) {
+          map.panTo([sampled.lat, sampled.lng], { animate: false });
+        }
+      }
+
+      animId = requestAnimationFrame(tick);
+    };
+
+    animId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(animId);
+  }, [map]);
+
+  useEffect(() => {
+    return () => {
+      markersRef.current.forEach((marker) => marker.remove());
+      markersRef.current.clear();
+      headingElsRef.current.clear();
+    };
+  }, []);
+
+  return null;
 }
 
 interface FocusControllerProps {

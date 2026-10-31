@@ -2963,24 +2963,37 @@ func (ps *PolylineSampler) ProjectPoint(lat, lng float64) (float64, float64) {
 	return bestDistMeters / 1000.0, progress
 }
 
-func generateDenseClosedSpline(stops [][]float64, pointsPerSeg int) [][]float64 {
+func generateArterialRoadPolyline(stops [][]float64, pointsPerSeg int) [][]float64 {
 	n := len(stops)
 	if n < 2 {
 		return stops
 	}
 	if pointsPerSeg <= 0 {
-		pointsPerSeg = 30
+		pointsPerSeg = 20
 	}
 	var res [][]float64
 	for i := 0; i < n; i++ {
-		p0 := stops[(i-1+n)%n]
 		p1 := stops[i]
 		p2 := stops[(i+1)%n]
-		p3 := stops[(i+2)%n]
+		dLat := p2[0] - p1[0]
+		dLng := p2[1] - p1[1]
+
 		for s := 0; s < pointsPerSeg; s++ {
 			t := float64(s) / float64(pointsPerSeg)
-			lat := catmullRom(p0[0], p1[0], p2[0], p3[0], t)
-			lng := catmullRom(p0[1], p1[1], p2[1], p3[1], t)
+			var lat, lng float64
+			if t <= 0.45 {
+				factor := t / 0.45
+				lat = p1[0] + dLat*factor*0.92
+				lng = p1[1] + dLng*factor*0.08
+			} else if t <= 0.55 {
+				factor := (t - 0.45) / 0.10
+				lat = p1[0] + dLat*(0.92+factor*0.04)
+				lng = p1[1] + dLng*(0.08+factor*0.84)
+			} else {
+				factor := (t - 0.55) / 0.45
+				lat = p1[0] + dLat*(0.96+factor*0.04)
+				lng = p1[1] + dLng*(0.92+factor*0.08)
+			}
 			res = append(res, []float64{lat, lng})
 		}
 	}
@@ -2988,6 +3001,10 @@ func generateDenseClosedSpline(stops [][]float64, pointsPerSeg int) [][]float64 
 		res = append(res, []float64{res[0][0], res[0][1]})
 	}
 	return res
+}
+
+func generateDenseClosedSpline(stops [][]float64, pointsPerSeg int) [][]float64 {
+	return generateArterialRoadPolyline(stops, pointsPerSeg)
 }
 
 func (s *Server) handleTelemetryStream(w http.ResponseWriter, r *http.Request) {
@@ -5336,45 +5353,57 @@ func (s *Server) ensureSchema(ctx context.Context) error {
 }
 
 func (s *Server) ensureRoutePolylinesAndTelemetry(ctx context.Context) error {
-	rows, err := s.pool.Pool.Query(ctx, `SELECT id, tenant_id FROM routes`)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
 	type rInfo struct {
 		id       string
 		tenantID string
 	}
 	var routes []rInfo
-	for rows.Next() {
-		var r rInfo
-		if err := rows.Scan(&r.id, &r.tenantID); err == nil {
-			routes = append(routes, r)
+
+	tx, err := s.pool.Pool.Begin(ctx)
+	if err == nil {
+		_, _ = tx.Exec(ctx, "SET LOCAL app.current_tenant = 'SUPER_ADMIN'")
+		rows, qErr := tx.Query(ctx, `SELECT id, tenant_id FROM routes`)
+		if qErr == nil {
+			for rows.Next() {
+				var r rInfo
+				if err := rows.Scan(&r.id, &r.tenantID); err == nil {
+					routes = append(routes, r)
+				}
+			}
+			rows.Close()
 		}
+		_ = tx.Commit(ctx)
 	}
-	rows.Close()
 
 	for _, r := range routes {
-		var existingPrimary, existingAlternate []byte
-		_ = s.pool.Pool.QueryRow(ctx, `SELECT primary_polyline, alternate_polyline FROM routes WHERE id = $1`, r.id).Scan(&existingPrimary, &existingAlternate)
+		var existingPrimary []byte
+		pTx, pErr := s.pool.Pool.Begin(ctx)
+		if pErr == nil {
+			_, _ = pTx.Exec(ctx, "SET LOCAL app.current_tenant = 'SUPER_ADMIN'")
+			_ = pTx.QueryRow(ctx, `SELECT primary_polyline FROM routes WHERE id = $1`, r.id).Scan(&existingPrimary)
+			_ = pTx.Commit(ctx)
+		}
 
 		var pCoords [][]float64
 		if len(existingPrimary) > 0 {
 			_ = json.Unmarshal(existingPrimary, &pCoords)
 		}
 
-		if len(pCoords) < 2 {
-			sRows, sErr := s.pool.Pool.Query(ctx, `
+		if len(pCoords) < 15 {
+			var stopCoords [][2]float64
+			var stopCoordsSlice [][]float64
+
+		sTx, sErr := s.pool.Pool.Begin(ctx)
+		if sErr == nil {
+			_, _ = sTx.Exec(ctx, "SET LOCAL app.current_tenant = 'SUPER_ADMIN'")
+			sRows, qErr := sTx.Query(ctx, `
 				SELECT s.latitude, s.longitude
 				FROM route_stops rs
 				JOIN stops s ON s.id = rs.stop_id
 				WHERE rs.route_id = $1
 				ORDER BY rs.stop_sequence ASC
 			`, r.id)
-			var stopCoords [][2]float64
-			var stopCoordsSlice [][]float64
-			if sErr == nil {
+			if qErr == nil {
 				for sRows.Next() {
 					var lat, lng float64
 					if err := sRows.Scan(&lat, &lng); err == nil {
@@ -5382,30 +5411,39 @@ func (s *Server) ensureRoutePolylinesAndTelemetry(ctx context.Context) error {
 						stopCoordsSlice = append(stopCoordsSlice, []float64{lat, lng})
 					}
 				}
-				sRows.Close()
+			sRows.Close()
 			}
-
-			if len(stopCoords) >= 2 {
-				loopWaypoints := append(stopCoords, stopCoords[0])
-				if s.router != nil {
-					res, err := s.router.GetMultiPointRoute(ctx, loopWaypoints)
-					if err == nil && res != nil && len(res.Coordinates) >= 2 {
-						pCoords = res.Coordinates
-					}
-				}
-				if len(pCoords) < 2 {
-					pCoords = generateDenseClosedSpline(stopCoordsSlice, 35)
-				}
-			}
+			_ = sTx.Commit(ctx)
 		}
 
-		var aCoords [][]float64
-		if len(existingAlternate) > 0 {
-			_ = json.Unmarshal(existingAlternate, &aCoords)
-		}
+		if len(stopCoords) >= 2 {
+			var distMeters float64
+			var durSec float64
+			loopWaypoints := append(stopCoords, stopCoords[0])
+			if s.router != nil {
+				res, err := s.router.GetMultiPointRoute(ctx, loopWaypoints)
+				if err == nil && res != nil && len(res.Coordinates) >= 15 {
+					pCoords = res.Coordinates
+					distMeters = res.DistanceMeters
+					durSec = res.DurationSeconds
+				}
+			}
+			if len(pCoords) < 15 {
+				pCoords = generateArterialRoadPolyline(stopCoordsSlice, 20)
+				distMeters = 0.0
+				for i := 1; i < len(pCoords); i++ {
+					distMeters += routing.HaversineDistanceMeters(pCoords[i-1][0], pCoords[i-1][1], pCoords[i][0], pCoords[i][1])
+				}
+				durSec = (distMeters / 1000.0) / 36.0 * 3600.0
+			}
 
-		if len(aCoords) < 2 && len(pCoords) >= 2 {
-			aCoords = make([][]float64, len(pCoords))
+			distKm := math.Round((distMeters/1000.0)*10.0) / 10.0
+			estMins := int(math.Ceil(durSec / 60.0))
+			if estMins < 10 {
+				estMins = 10
+			}
+
+			aCoords := make([][]float64, len(pCoords))
 			for i, pt := range pCoords {
 				lat := pt[0]
 				lng := pt[1]
@@ -5417,57 +5455,72 @@ func (s *Server) ensureRoutePolylinesAndTelemetry(ctx context.Context) error {
 				}
 				aCoords[i] = []float64{lat, lng}
 			}
-		}
 
-		if len(pCoords) >= 2 {
 			pBytes, _ := json.Marshal(pCoords)
 			aBytes, _ := json.Marshal(aCoords)
-			_, _ = s.pool.Pool.Exec(ctx, `UPDATE routes SET primary_polyline = $1, alternate_polyline = $2 WHERE id = $3`, pBytes, aBytes, r.id)
+
+			uTx, uErr := s.pool.Pool.Begin(ctx)
+			if uErr == nil {
+				_, _ = uTx.Exec(ctx, "SET LOCAL app.current_tenant = 'SUPER_ADMIN'")
+				_, _ = uTx.Exec(ctx, `UPDATE routes SET primary_polyline = $1, alternate_polyline = $2, distance_km = $3, estimated_minutes = $4 WHERE id = $5`, pBytes, aBytes, distKm, estMins, r.id)
+				_ = uTx.Commit(ctx)
+			}
 		}
 	}
+	}
 
-	bRows, err := s.pool.Pool.Query(ctx, `
-		SELECT b.id, b.tenant_id, b.route_id, b.route_variant, b.route_progress, r.primary_polyline, r.alternate_polyline
-		FROM buses b
-		JOIN routes r ON r.id = b.route_id
-	`)
+	type busInit struct {
+		id           string
+		tenantID     string
+		routeID      string
+		routeVariant string
+		progress     float64
+		primary      []byte
+		alternate    []byte
+	}
+	var busesToInit []busInit
+
+	bTx, err := s.pool.Pool.Begin(ctx)
 	if err == nil {
-		type busInit struct {
-			id           string
-			tenantID     string
-			routeID      string
-			routeVariant string
-			progress     float64
-			primary      []byte
-			alternate    []byte
-		}
-		var busesToInit []busInit
-		for bRows.Next() {
-			var bi busInit
-			if err := bRows.Scan(&bi.id, &bi.tenantID, &bi.routeID, &bi.routeVariant, &bi.progress, &bi.primary, &bi.alternate); err == nil {
-				busesToInit = append(busesToInit, bi)
-			}
-		}
-		bRows.Close()
-
-		for _, bi := range busesToInit {
-			var poly [][]float64
-			if bi.routeVariant == "ALTERNATE_ROUTE_2" && len(bi.alternate) > 0 {
-				_ = json.Unmarshal(bi.alternate, &poly)
-			}
-			if len(poly) < 2 && len(bi.primary) > 0 {
-				_ = json.Unmarshal(bi.primary, &poly)
-			}
-			if len(poly) >= 2 {
-				sampler := NewPolylineSampler(poly)
-				lat, lng, heading := sampler.Sample(bi.progress)
-				seq := int(bi.progress/0.20) + 1
-				if seq > 5 {
-					seq = 5
+		_, _ = bTx.Exec(ctx, "SET LOCAL app.current_tenant = 'SUPER_ADMIN'")
+		bRows, qErr := bTx.Query(ctx, `
+			SELECT b.id, b.tenant_id, b.route_id, b.route_variant, b.route_progress, r.primary_polyline, r.alternate_polyline
+			FROM buses b
+			JOIN routes r ON r.id = b.route_id
+		`)
+		if qErr == nil {
+			for bRows.Next() {
+				var bi busInit
+				if err := bRows.Scan(&bi.id, &bi.tenantID, &bi.routeID, &bi.routeVariant, &bi.progress, &bi.primary, &bi.alternate); err == nil {
+					busesToInit = append(busesToInit, bi)
 				}
-				progPct := math.Round(bi.progress * 1000.0) / 10.0
+			}
+			bRows.Close()
+		}
+		_ = bTx.Commit(ctx)
+	}
 
-				_, _ = s.pool.Pool.Exec(ctx, `
+	for _, bi := range busesToInit {
+		var poly [][]float64
+		if bi.routeVariant == "ALTERNATE_ROUTE_2" && len(bi.alternate) > 0 {
+			_ = json.Unmarshal(bi.alternate, &poly)
+		}
+		if len(poly) < 2 && len(bi.primary) > 0 {
+			_ = json.Unmarshal(bi.primary, &poly)
+		}
+		if len(poly) >= 2 {
+			sampler := NewPolylineSampler(poly)
+			lat, lng, heading := sampler.Sample(bi.progress)
+			seq := int(bi.progress/0.20) + 1
+			if seq > 5 {
+				seq = 5
+			}
+			progPct := math.Round(bi.progress * 1000.0) / 10.0
+
+			tTx, tErr := s.pool.Pool.Begin(ctx)
+			if tErr == nil {
+				_, _ = tTx.Exec(ctx, "SET LOCAL app.current_tenant = 'SUPER_ADMIN'")
+				_, _ = tTx.Exec(ctx, `
 					INSERT INTO bus_telemetry (
 						recorded_at, tenant_id, bus_id, route_id, latitude, longitude, location, speed_kmh, heading_deg, occupancy, trip_status, progress_pct
 					) VALUES (
@@ -5475,11 +5528,12 @@ func (s *Server) ensureRoutePolylinesAndTelemetry(ctx context.Context) error {
 					)
 				`, bi.tenantID, bi.id, bi.routeID, lat, lng, heading, progPct)
 
-				_, _ = s.pool.Pool.Exec(ctx, `
+				_, _ = tTx.Exec(ctx, `
 					UPDATE buses
 					SET route_progress = $1, current_stop_sequence = $2, progress_pct = $3, trip_status = 'IN_TRANSIT'
 					WHERE id = $4
 				`, bi.progress, seq, progPct, bi.id)
+				_ = tTx.Commit(ctx)
 			}
 		}
 	}
@@ -5527,86 +5581,223 @@ func (s *Server) seedMultiSectorWorkspaces(ctx context.Context) error {
 			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', 'driver@himalayancharter.com', 'DRIVER', 'Dorje Lama (Master Alpine Driver)', '$2a$10$OkAmq4G0eANM.xSNfAi0O.BZmB.OuMdSPahnJO/lgLlwOgIDTQs4i'),
 			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', 'guest@himalayancharter.com', 'RIDER', 'Elena Rostova (Charter Passenger)', '$2a$10$OkAmq4G0eANM.xSNfAi0O.BZmB.OuMdSPahnJO/lgLlwOgIDTQs4i')
 		ON CONFLICT (tenant_id, email) DO UPDATE SET password_hash = EXCLUDED.password_hash, full_name = EXCLUDED.full_name`,
+		`DELETE FROM route_stops WHERE tenant_id IN ('11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222', '33333333-3333-3333-3333-333333333333', '44444444-4444-4444-4444-444444444444', '55555555-5555-5555-5555-555555555555', '66666666-6666-6666-6666-666666666666', '77777777-7777-7777-7777-777777777777')`,
+		`DELETE FROM stops WHERE tenant_id IN ('11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222', '33333333-3333-3333-3333-333333333333', '44444444-4444-4444-4444-444444444444', '55555555-5555-5555-5555-555555555555', '66666666-6666-6666-6666-666666666666', '77777777-7777-7777-7777-777777777777')`,
+		`UPDATE routes SET primary_polyline = '[]'::jsonb, alternate_polyline = '[]'::jsonb WHERE tenant_id IN ('11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222', '33333333-3333-3333-3333-333333333333', '44444444-4444-4444-4444-444444444444', '55555555-5555-5555-5555-555555555555', '66666666-6666-6666-6666-666666666666', '77777777-7777-7777-7777-777777777777')`,
 		`INSERT INTO stops (id, tenant_id, name, code, latitude, longitude, location) VALUES
 			('11111111-0001-0001-0000-000000000001', '11111111-1111-1111-1111-111111111111', 'Rimba Ilmu Botanic Garden', 'UM-S01', 3.1294, 101.6565, ST_SetSRID(ST_MakePoint(101.6565, 3.1294), 4326)::geography),
-			('11111111-0001-0001-0000-000000000002', '11111111-1111-1111-1111-111111111111', 'Dewan Tunku Canselor', 'UM-S02', 3.1190, 101.6510, ST_SetSRID(ST_MakePoint(101.6510, 3.1190), 4326)::geography),
-			('11111111-0001-0001-0000-000000000003', '11111111-1111-1111-1111-111111111111', 'UM Medical Centre', 'UM-S03', 3.1135, 101.6530, ST_SetSRID(ST_MakePoint(101.6530, 3.1135), 4326)::geography),
-			('11111111-0001-0001-0000-000000000004', '11111111-1111-1111-1111-111111111111', 'Mid Valley Southpoint', 'UM-S04', 3.1180, 101.6775, ST_SetSRID(ST_MakePoint(101.6775, 3.1180), 4326)::geography),
-			('11111111-0001-0001-0000-000000000005', '11111111-1111-1111-1111-111111111111', 'KL Sentral Transit Hub', 'UM-S05', 3.1340, 101.6865, ST_SetSRID(ST_MakePoint(101.6865, 3.1340), 4326)::geography),
+			('11111111-0001-0001-0000-000000000002', '11111111-1111-1111-1111-111111111111', 'Faculty of Arts Social Sciences', 'UM-S02', 3.1250, 101.6540, ST_SetSRID(ST_MakePoint(101.6540, 3.1250), 4326)::geography),
+			('11111111-0001-0001-0000-000000000003', '11111111-1111-1111-1111-111111111111', 'Dewan Tunku Canselor', 'UM-S03', 3.1190, 101.6510, ST_SetSRID(ST_MakePoint(101.6510, 3.1190), 4326)::geography),
+			('11111111-0001-0001-0000-000000000004', '11111111-1111-1111-1111-111111111111', 'UM Library Central', 'UM-S04', 3.1215, 101.6535, ST_SetSRID(ST_MakePoint(101.6535, 3.1215), 4326)::geography),
+			('11111111-0001-0001-0000-000000000005', '11111111-1111-1111-1111-111111111111', 'Academy of Islamic Studies', 'UM-S05', 3.1265, 101.6580, ST_SetSRID(ST_MakePoint(101.6580, 3.1265), 4326)::geography),
+			('11111111-0001-0002-0000-000000000001', '11111111-1111-1111-1111-111111111111', 'UM Medical Centre Gate', 'UM-S06', 3.1135, 101.6530, ST_SetSRID(ST_MakePoint(101.6530, 3.1135), 4326)::geography),
+			('11111111-0001-0002-0000-000000000002', '11111111-1111-1111-1111-111111111111', 'Clinical Diagnostic Tower', 'UM-S07', 3.1145, 101.6560, ST_SetSRID(ST_MakePoint(101.6560, 3.1145), 4326)::geography),
+			('11111111-0001-0002-0000-000000000003', '11111111-1111-1111-1111-111111111111', 'Pantai Panorama Concourse', 'UM-S08', 3.1110, 101.6620, ST_SetSRID(ST_MakePoint(101.6620, 3.1110), 4326)::geography),
+			('11111111-0001-0002-0000-000000000004', '11111111-1111-1111-1111-111111111111', 'Kerinchi LRT Link', 'UM-S09', 3.1158, 101.6685, ST_SetSRID(ST_MakePoint(101.6685, 3.1158), 4326)::geography),
+			('11111111-0001-0002-0000-000000000005', '11111111-1111-1111-1111-111111111111', 'Bangsar South Horizon', 'UM-S10', 3.1120, 101.6640, ST_SetSRID(ST_MakePoint(101.6640, 3.1120), 4326)::geography),
+			('11111111-0001-0003-0000-000000000001', '11111111-1111-1111-1111-111111111111', 'Mid Valley North Court', 'UM-S11', 3.1185, 101.6770, ST_SetSRID(ST_MakePoint(101.6770, 3.1185), 4326)::geography),
+			('11111111-0001-0003-0000-000000000002', '11111111-1111-1111-1111-111111111111', 'The Gardens Galleria', 'UM-S12', 3.1175, 101.6750, ST_SetSRID(ST_MakePoint(101.6750, 3.1175), 4326)::geography),
+			('11111111-0001-0003-0000-000000000003', '11111111-1111-1111-1111-111111111111', 'Abdullah Hukum LRT KTM', 'UM-S13', 3.1188, 101.6730, ST_SetSRID(ST_MakePoint(101.6730, 3.1188), 4326)::geography),
+			('11111111-0001-0003-0000-000000000004', '11111111-1111-1111-1111-111111111111', 'KL Eco City Walkway', 'UM-S14', 3.1195, 101.6745, ST_SetSRID(ST_MakePoint(101.6745, 3.1195), 4326)::geography),
+			('11111111-0001-0003-0000-000000000005', '11111111-1111-1111-1111-111111111111', 'Mid Valley Southpoint', 'UM-S15', 3.1180, 101.6790, ST_SetSRID(ST_MakePoint(101.6790, 3.1180), 4326)::geography),
+			('11111111-0001-0004-0000-000000000001', '11111111-1111-1111-1111-111111111111', 'KL Sentral Departure Concourse', 'UM-S16', 3.1340, 101.6865, ST_SetSRID(ST_MakePoint(101.6865, 3.1340), 4326)::geography),
+			('11111111-0001-0004-0000-000000000002', '11111111-1111-1111-1111-111111111111', 'NU Sentral Plaza', 'UM-S17', 3.1325, 101.6875, ST_SetSRID(ST_MakePoint(101.6875, 3.1325), 4326)::geography),
+			('11111111-0001-0004-0000-000000000003', '11111111-1111-1111-1111-111111111111', 'Muzium Negara Station', 'UM-S18', 3.1375, 101.6890, ST_SetSRID(ST_MakePoint(101.6890, 3.1375), 4326)::geography),
+			('11111111-0001-0004-0000-000000000004', '11111111-1111-1111-1111-111111111111', 'Brickfields Little India', 'UM-S19', 3.1300, 101.6850, ST_SetSRID(ST_MakePoint(101.6850, 3.1300), 4326)::geography),
+			('11111111-0001-0004-0000-000000000005', '11111111-1111-1111-1111-111111111111', 'KL Sentral Monorail Terminus', 'UM-S20', 3.1330, 101.6880, ST_SetSRID(ST_MakePoint(101.6880, 3.1330), 4326)::geography),
+			('11111111-0001-0005-0000-000000000001', '11111111-1111-1111-1111-111111111111', 'Pusat Bandar Damansara MRT', 'UM-S21', 3.1435, 101.6620, ST_SetSRID(ST_MakePoint(101.6620, 3.1435), 4326)::geography),
+			('11111111-0001-0005-0000-000000000002', '11111111-1111-1111-1111-111111111111', 'Damansara City Mall', 'UM-S22', 3.1450, 101.6645, ST_SetSRID(ST_MakePoint(101.6645, 3.1450), 4326)::geography),
+			('11111111-0001-0005-0000-000000000003', '11111111-1111-1111-1111-111111111111', 'Wisma HELP Plaza', 'UM-S23', 3.1480, 101.6610, ST_SetSRID(ST_MakePoint(101.6610, 3.1480), 4326)::geography),
+			('11111111-0001-0005-0000-000000000004', '11111111-1111-1111-1111-111111111111', 'Semantan MRT Concourse', 'UM-S24', 3.1510, 101.6660, ST_SetSRID(ST_MakePoint(101.6660, 3.1510), 4326)::geography),
+			('11111111-0001-0005-0000-000000000005', '11111111-1111-1111-1111-111111111111', 'Bukit Damansara Residential Link', 'UM-S25', 3.1470, 101.6580, ST_SetSRID(ST_MakePoint(101.6580, 3.1470), 4326)::geography),
 			('22222222-0001-0001-0000-000000000001', '22222222-2222-2222-2222-222222222222', 'UTown Green', 'NUS-S01', 1.3038, 103.7740, ST_SetSRID(ST_MakePoint(103.7740, 1.3038), 4326)::geography),
-			('22222222-0001-0001-0000-000000000002', '22222222-2222-2222-2222-222222222222', 'Kent Ridge MRT', 'NUS-S02', 1.2935, 103.7845, ST_SetSRID(ST_MakePoint(103.7845, 1.2935), 4326)::geography),
-			('22222222-0001-0001-0000-000000000003', '22222222-2222-2222-2222-222222222222', 'Biopolis One-North', 'NUS-S03', 1.3005, 103.7915, ST_SetSRID(ST_MakePoint(103.7915, 1.3005), 4326)::geography),
-			('22222222-0001-0001-0000-000000000004', '22222222-2222-2222-2222-222222222222', 'Science Park II', 'NUS-S04', 1.2885, 103.7810, ST_SetSRID(ST_MakePoint(103.7810, 1.2885), 4326)::geography),
-			('22222222-0001-0001-0000-000000000005', '22222222-2222-2222-2222-222222222222', 'VivoCity HarbourFront', 'NUS-S05', 1.2644, 103.8220, ST_SetSRID(ST_MakePoint(103.8220, 1.2644), 4326)::geography),
-			('33333333-0001-0001-0000-000000000001', '33333333-3333-3333-3333-333333333333', 'Hongo Red Gate', 'UTK-S01', 35.7100, 139.7600, ST_SetSRID(ST_MakePoint(139.7600, 35.7100), 4326)::geography),
-			('33333333-0001-0001-0000-000000000002', '33333333-3333-3333-3333-333333333333', 'Ueno Park Station', 'UTK-S02', 35.7140, 139.7740, ST_SetSRID(ST_MakePoint(139.7740, 35.7140), 4326)::geography),
-			('33333333-0001-0001-0000-000000000003', '33333333-3333-3333-3333-333333333333', 'Akihabara Electric Town', 'UTK-S03', 35.6985, 139.7730, ST_SetSRID(ST_MakePoint(139.7730, 35.6985), 4326)::geography),
-			('33333333-0001-0001-0000-000000000004', '33333333-3333-3333-3333-333333333333', 'Marunouchi Central', 'UTK-S04', 35.6812, 139.7671, ST_SetSRID(ST_MakePoint(139.7671, 35.6812), 4326)::geography),
-			('33333333-0001-0001-0000-000000000005', '33333333-3333-3333-3333-333333333333', 'Komaba Research Campus', 'UTK-S05', 35.6600, 139.6850, ST_SetSRID(ST_MakePoint(139.6850, 35.6600), 4326)::geography),
+			('22222222-0001-0001-0000-000000000002', '22222222-2222-2222-2222-222222222222', 'University Cultural Centre', 'NUS-S02', 1.2990, 103.7725, ST_SetSRID(ST_MakePoint(103.7725, 1.2990), 4326)::geography),
+			('22222222-0001-0001-0000-000000000003', '22222222-2222-2222-2222-222222222222', 'Central Library Forum', 'NUS-S03', 1.2965, 103.7728, ST_SetSRID(ST_MakePoint(103.7728, 1.2965), 4326)::geography),
+			('22222222-0001-0001-0000-000000000004', '22222222-2222-2222-2222-222222222222', 'Computer Science SoC', 'NUS-S04', 1.2945, 103.7740, ST_SetSRID(ST_MakePoint(103.7740, 1.2945), 4326)::geography),
+			('22222222-0001-0001-0000-000000000005', '22222222-2222-2222-2222-222222222222', 'Prince George Park Terminus', 'NUS-S05', 1.2915, 103.7805, ST_SetSRID(ST_MakePoint(103.7805, 1.2915), 4326)::geography),
+			('22222222-0001-0002-0000-000000000001', '22222222-2222-2222-2222-222222222222', 'Kent Ridge MRT Station', 'NUS-S06', 1.2935, 103.7845, ST_SetSRID(ST_MakePoint(103.7845, 1.2935), 4326)::geography),
+			('22222222-0001-0002-0000-000000000002', '22222222-2222-2222-2222-222222222222', 'National University Hospital Main', 'NUS-S07', 1.2940, 103.7830, ST_SetSRID(ST_MakePoint(103.7830, 1.2940), 4326)::geography),
+			('22222222-0001-0002-0000-000000000003', '22222222-2222-2222-2222-222222222222', 'Yong Loo Lin School of Medicine', 'NUS-S08', 1.2960, 103.7815, ST_SetSRID(ST_MakePoint(103.7815, 1.2960), 4326)::geography),
+			('22222222-0001-0002-0000-000000000004', '22222222-2222-2222-2222-222222222222', 'Science Drive 2', 'NUS-S09', 1.2970, 103.7800, ST_SetSRID(ST_MakePoint(103.7800, 1.2970), 4326)::geography),
+			('22222222-0001-0002-0000-000000000005', '22222222-2222-2222-2222-222222222222', 'Faculty of Dentistry Hub', 'NUS-S10', 1.2950, 103.7825, ST_SetSRID(ST_MakePoint(103.7825, 1.2950), 4326)::geography),
+			('22222222-0001-0003-0000-000000000001', '22222222-2222-2222-2222-222222222222', 'Biopolis One-North Central', 'NUS-S11', 1.3005, 103.7915, ST_SetSRID(ST_MakePoint(103.7915, 1.3005), 4326)::geography),
+			('22222222-0001-0003-0000-000000000002', '22222222-2222-2222-2222-222222222222', 'Fusionopolis Way', 'NUS-S12', 1.2985, 103.7885, ST_SetSRID(ST_MakePoint(103.7885, 1.2985), 4326)::geography),
+			('22222222-0001-0003-0000-000000000003', '22222222-2222-2222-2222-222222222222', 'One-North MRT Plaza', 'NUS-S13', 1.2995, 103.7870, ST_SetSRID(ST_MakePoint(103.7870, 1.2995), 4326)::geography),
+			('22222222-0001-0003-0000-000000000004', '22222222-2222-2222-2222-222222222222', 'Mediapolis Infinite Studios', 'NUS-S14', 1.2950, 103.7930, ST_SetSRID(ST_MakePoint(103.7930, 1.2950), 4326)::geography),
+			('22222222-0001-0003-0000-000000000005', '22222222-2222-2222-2222-222222222222', 'LaunchPad One-North', 'NUS-S15', 1.2975, 103.7865, ST_SetSRID(ST_MakePoint(103.7865, 1.2975), 4326)::geography),
+			('22222222-0001-0004-0000-000000000001', '22222222-2222-2222-2222-222222222222', 'Science Park II The Alpha', 'NUS-S16', 1.2885, 103.7810, ST_SetSRID(ST_MakePoint(103.7810, 1.2885), 4326)::geography),
+			('22222222-0001-0004-0000-000000000002', '22222222-2222-2222-2222-222222222222', 'Sparkle Concourse', 'NUS-S17', 1.2870, 103.7830, ST_SetSRID(ST_MakePoint(103.7830, 1.2870), 4326)::geography),
+			('22222222-0001-0004-0000-000000000003', '22222222-2222-2222-2222-222222222222', 'The Aries Innovation Hub', 'NUS-S18', 1.2895, 103.7800, ST_SetSRID(ST_MakePoint(103.7800, 1.2895), 4326)::geography),
+			('22222222-0001-0004-0000-000000000004', '22222222-2222-2222-2222-222222222222', 'Haw Par Villa MRT', 'NUS-S19', 1.2825, 103.7818, ST_SetSRID(ST_MakePoint(103.7818, 1.2825), 4326)::geography),
+			('22222222-0001-0004-0000-000000000005', '22222222-2222-2222-2222-222222222222', 'Science Park Drive Loop', 'NUS-S20', 1.2860, 103.7825, ST_SetSRID(ST_MakePoint(103.7825, 1.2860), 4326)::geography),
+			('22222222-0001-0005-0000-000000000001', '22222222-2222-2222-2222-222222222222', 'Pasir Panjang Terminal', 'NUS-S21', 1.2760, 103.7915, ST_SetSRID(ST_MakePoint(103.7915, 1.2760), 4326)::geography),
+			('22222222-0001-0005-0000-000000000002', '22222222-2222-2222-2222-222222222222', 'Labrador Park MRT', 'NUS-S22', 1.2722, 103.8030, ST_SetSRID(ST_MakePoint(103.8030, 1.2722), 4326)::geography),
+			('22222222-0001-0005-0000-000000000003', '22222222-2222-2222-2222-222222222222', 'Mapletree Business City', 'NUS-S23', 1.2750, 103.7985, ST_SetSRID(ST_MakePoint(103.7985, 1.2750), 4326)::geography),
+			('22222222-0001-0005-0000-000000000004', '22222222-2222-2222-2222-222222222222', 'Telok Blangah Concourse', 'NUS-S24', 1.2705, 103.8095, ST_SetSRID(ST_MakePoint(103.8095, 1.2705), 4326)::geography),
+			('22222222-0001-0005-0000-000000000005', '22222222-2222-2222-2222-222222222222', 'VivoCity HarbourFront', 'NUS-S25', 1.2644, 103.8220, ST_SetSRID(ST_MakePoint(103.8220, 1.2644), 4326)::geography),
+			('33333333-0001-0001-0000-000000000001', '33333333-3333-3333-3333-333333333333', 'Hongo Red Gate Akamon', 'UTK-S01', 35.7100, 139.7600, ST_SetSRID(ST_MakePoint(139.7600, 35.7100), 4326)::geography),
+			('33333333-0001-0001-0000-000000000002', '33333333-3333-3333-3333-333333333333', 'Yasuda Auditorium Plaza', 'UTK-S02', 35.7135, 139.7620, ST_SetSRID(ST_MakePoint(139.7620, 35.7135), 4326)::geography),
+			('33333333-0001-0001-0000-000000000003', '33333333-3333-3333-3333-333333333333', 'Todai Hospital Main', 'UTK-S03', 35.7120, 139.7650, ST_SetSRID(ST_MakePoint(139.7650, 35.7120), 4326)::geography),
+			('33333333-0001-0001-0000-000000000004', '33333333-3333-3333-3333-333333333333', 'Shinobazu Pond Promenade', 'UTK-S04', 35.7115, 139.7700, ST_SetSRID(ST_MakePoint(139.7700, 35.7115), 4326)::geography),
+			('33333333-0001-0001-0000-000000000005', '33333333-3333-3333-3333-333333333333', 'Ueno Park Station Concourse', 'UTK-S05', 35.7140, 139.7740, ST_SetSRID(ST_MakePoint(139.7740, 35.7140), 4326)::geography),
+			('33333333-0001-0002-0000-000000000001', '33333333-3333-3333-3333-333333333333', 'Ochanomizu Bridge', 'UTK-S06', 35.7000, 139.7645, ST_SetSRID(ST_MakePoint(139.7645, 35.7000), 4326)::geography),
+			('33333333-0001-0002-0000-000000000002', '33333333-3333-3333-3333-333333333333', 'Kanda Myojin Shrine', 'UTK-S07', 35.7020, 139.7680, ST_SetSRID(ST_MakePoint(139.7680, 35.7020), 4326)::geography),
+			('33333333-0001-0002-0000-000000000003', '33333333-3333-3333-3333-333333333333', 'Akihabara Electric Town North', 'UTK-S08', 35.6995, 139.7710, ST_SetSRID(ST_MakePoint(139.7710, 35.6995), 4326)::geography),
+			('33333333-0001-0002-0000-000000000004', '33333333-3333-3333-3333-333333333333', 'Akihabara Station Central', 'UTK-S09', 35.6985, 139.7730, ST_SetSRID(ST_MakePoint(139.7730, 35.6985), 4326)::geography),
+			('33333333-0001-0002-0000-000000000005', '33333333-3333-3333-3333-333333333333', 'Iwamotocho Crossing', 'UTK-S10', 35.6940, 139.7745, ST_SetSRID(ST_MakePoint(139.7745, 35.6940), 4326)::geography),
+			('33333333-0001-0003-0000-000000000001', '33333333-3333-3333-3333-333333333333', 'Otemachi Financial Tower', 'UTK-S11', 35.6870, 139.7650, ST_SetSRID(ST_MakePoint(139.7650, 35.6870), 4326)::geography),
+			('33333333-0001-0003-0000-000000000002', '33333333-3333-3333-3333-333333333333', 'Tokyo Station Marunouchi North', 'UTK-S12', 35.6830, 139.7660, ST_SetSRID(ST_MakePoint(139.7660, 35.6830), 4326)::geography),
+			('33333333-0001-0003-0000-000000000003', '33333333-3333-3333-3333-333333333333', 'Marunouchi Central Plaza', 'UTK-S13', 35.6812, 139.7671, ST_SetSRID(ST_MakePoint(139.7671, 35.6812), 4326)::geography),
+			('33333333-0001-0003-0000-000000000004', '33333333-3333-3333-3333-333333333333', 'Yurakucho Concourse', 'UTK-S14', 35.6750, 139.7635, ST_SetSRID(ST_MakePoint(139.7635, 35.6750), 4326)::geography),
+			('33333333-0001-0003-0000-000000000005', '33333333-3333-3333-3333-333333333333', 'Imperial Palace Outer Garden', 'UTK-S15', 35.6800, 139.7580, ST_SetSRID(ST_MakePoint(139.7580, 35.6800), 4326)::geography),
+			('33333333-0001-0004-0000-000000000001', '33333333-3333-3333-3333-333333333333', 'Kasuga Metro Hub', 'UTK-S16', 35.7080, 139.7525, ST_SetSRID(ST_MakePoint(139.7525, 35.7080), 4326)::geography),
+			('33333333-0001-0004-0000-000000000002', '33333333-3333-3333-3333-333333333333', 'Tokyo Dome City', 'UTK-S17', 35.7055, 139.7520, ST_SetSRID(ST_MakePoint(139.7520, 35.7055), 4326)::geography),
+			('33333333-0001-0004-0000-000000000003', '33333333-3333-3333-3333-333333333333', 'Koishikawa Botanical Garden', 'UTK-S18', 35.7190, 139.7460, ST_SetSRID(ST_MakePoint(139.7460, 35.7190), 4326)::geography),
+			('33333333-0001-0004-0000-000000000004', '33333333-3333-3333-3333-333333333333', 'Hakusan Station', 'UTK-S19', 35.7215, 139.7520, ST_SetSRID(ST_MakePoint(139.7520, 35.7215), 4326)::geography),
+			('33333333-0001-0004-0000-000000000005', '33333333-3333-3333-3333-333333333333', 'Todai Yayoi Campus Gate', 'UTK-S20', 35.7180, 139.7605, ST_SetSRID(ST_MakePoint(139.7605, 35.7180), 4326)::geography),
+			('33333333-0001-0005-0000-000000000001', '33333333-3333-3333-3333-333333333333', 'Komaba Research Campus', 'UTK-S21', 35.6600, 139.6850, ST_SetSRID(ST_MakePoint(139.6850, 35.6600), 4326)::geography),
+			('33333333-0001-0005-0000-000000000002', '33333333-3333-3333-3333-333333333333', 'Komaba-Todaimae Station', 'UTK-S22', 35.6580, 139.6880, ST_SetSRID(ST_MakePoint(139.6880, 35.6580), 4326)::geography),
+			('33333333-0001-0005-0000-000000000003', '33333333-3333-3333-3333-333333333333', 'Shoto Residential', 'UTK-S23', 35.6605, 139.6930, ST_SetSRID(ST_MakePoint(139.6930, 35.6605), 4326)::geography),
+			('33333333-0001-0005-0000-000000000004', '33333333-3333-3333-3333-333333333333', 'Shibuya Mark City', 'UTK-S24', 35.6585, 139.6985, ST_SetSRID(ST_MakePoint(139.6985, 35.6585), 4326)::geography),
+			('33333333-0001-0005-0000-000000000005', '33333333-3333-3333-3333-333333333333', 'Shibuya Scramble Crossing', 'UTK-S25', 35.6595, 139.7005, ST_SetSRID(ST_MakePoint(139.7005, 35.6595), 4326)::geography),
 			('44444444-0001-0001-0000-000000000001', '44444444-4444-4444-4444-444444444444', 'IIT Main Gate Hauz Khas', 'IITD-S01', 28.5450, 77.1925, ST_SetSRID(ST_MakePoint(77.1925, 28.5450), 4326)::geography),
-			('44444444-0001-0001-0000-000000000002', '44444444-4444-4444-4444-444444444444', 'AIIMS Safdarjung', 'IITD-S02', 28.5670, 77.2100, ST_SetSRID(ST_MakePoint(77.2100, 28.5670), 4326)::geography),
-			('44444444-0001-0001-0000-000000000003', '44444444-4444-4444-4444-444444444444', 'INA Metro Hub', 'IITD-S03', 28.5750, 77.2090, ST_SetSRID(ST_MakePoint(77.2090, 28.5750), 4326)::geography),
-			('44444444-0001-0001-0000-000000000004', '44444444-4444-4444-4444-444444444444', 'Lodhi Road Complex', 'IITD-S04', 28.5910, 77.2250, ST_SetSRID(ST_MakePoint(77.2250, 28.5910), 4326)::geography),
-			('44444444-0001-0001-0000-000000000005', '44444444-4444-4444-4444-444444444444', 'Connaught Place Outer Circle', 'IITD-S05', 28.6328, 77.2195, ST_SetSRID(ST_MakePoint(77.2195, 28.6328), 4326)::geography),
+			('44444444-0001-0001-0000-000000000002', '44444444-4444-4444-4444-444444444444', 'IIT Hostel Gate', 'IITD-S02', 28.5480, 77.1870, ST_SetSRID(ST_MakePoint(77.1870, 28.5480), 4326)::geography),
+			('44444444-0001-0001-0000-000000000003', '44444444-4444-4444-4444-444444444444', 'SDA Market Complex', 'IITD-S03', 28.5465, 77.1980, ST_SetSRID(ST_MakePoint(77.1980, 28.5465), 4326)::geography),
+			('44444444-0001-0001-0000-000000000004', '44444444-4444-4444-4444-444444444444', 'Green Park Metro', 'IITD-S04', 28.5585, 77.2065, ST_SetSRID(ST_MakePoint(77.2065, 28.5585), 4326)::geography),
+			('44444444-0001-0001-0000-000000000005', '44444444-4444-4444-4444-444444444444', 'AIIMS Safdarjung Terminal', 'IITD-S05', 28.5670, 77.2100, ST_SetSRID(ST_MakePoint(77.2100, 28.5670), 4326)::geography),
+			('44444444-0001-0002-0000-000000000001', '44444444-4444-4444-4444-444444444444', 'INA Metro Hub', 'IITD-S06', 28.5750, 77.2090, ST_SetSRID(ST_MakePoint(77.2090, 28.5750), 4326)::geography),
+			('44444444-0001-0002-0000-000000000002', '44444444-4444-4444-4444-444444444444', 'Dilli Haat Cultural Centre', 'IITD-S07', 28.5735, 77.2075, ST_SetSRID(ST_MakePoint(77.2075, 28.5735), 4326)::geography),
+			('44444444-0001-0002-0000-000000000003', '44444444-4444-4444-4444-444444444444', 'South Extension Part 1', 'IITD-S08', 28.5695, 77.2190, ST_SetSRID(ST_MakePoint(77.2190, 28.5695), 4326)::geography),
+			('44444444-0001-0002-0000-000000000004', '44444444-4444-4444-4444-444444444444', 'South Extension Part 2', 'IITD-S09', 28.5675, 77.2220, ST_SetSRID(ST_MakePoint(77.2220, 28.5675), 4326)::geography),
+			('44444444-0001-0002-0000-000000000005', '44444444-4444-4444-4444-444444444444', 'Andrews Ganj Crossing', 'IITD-S10', 28.5620, 77.2280, ST_SetSRID(ST_MakePoint(77.2280, 28.5620), 4326)::geography),
+			('44444444-0001-0003-0000-000000000001', '44444444-4444-4444-4444-444444444444', 'Lodhi Road Complex', 'IITD-S11', 28.5910, 77.2250, ST_SetSRID(ST_MakePoint(77.2250, 28.5910), 4326)::geography),
+			('44444444-0001-0003-0000-000000000002', '44444444-4444-4444-4444-444444444444', 'India Habitat Centre', 'IITD-S12', 28.5895, 77.2230, ST_SetSRID(ST_MakePoint(77.2230, 28.5895), 4326)::geography),
+			('44444444-0001-0003-0000-000000000003', '44444444-4444-4444-4444-444444444444', 'Lodhi Garden Gate 1', 'IITD-S13', 28.5930, 77.2195, ST_SetSRID(ST_MakePoint(77.2195, 28.5930), 4326)::geography),
+			('44444444-0001-0003-0000-000000000004', '44444444-4444-4444-4444-444444444444', 'Khan Market Central', 'IITD-S14', 28.6000, 77.2270, ST_SetSRID(ST_MakePoint(77.2270, 28.6000), 4326)::geography),
+			('44444444-0001-0003-0000-000000000005', '44444444-4444-4444-4444-444444444444', 'Humayun Tomb Heritage Gate', 'IITD-S15', 28.5935, 77.2450, ST_SetSRID(ST_MakePoint(77.2450, 28.5935), 4326)::geography),
+			('44444444-0001-0004-0000-000000000001', '44444444-4444-4444-4444-444444444444', 'Central Secretariat Metro', 'IITD-S16', 28.6145, 77.2115, ST_SetSRID(ST_MakePoint(77.2115, 28.6145), 4326)::geography),
+			('44444444-0001-0004-0000-000000000002', '44444444-4444-4444-4444-444444444444', 'Udyog Bhawan', 'IITD-S17', 28.6110, 77.2130, ST_SetSRID(ST_MakePoint(77.2130, 28.6110), 4326)::geography),
+			('44444444-0001-0004-0000-000000000003', '44444444-4444-4444-4444-444444444444', 'National Museum Janpath', 'IITD-S18', 28.6115, 77.2185, ST_SetSRID(ST_MakePoint(77.2185, 28.6115), 4326)::geography),
+			('44444444-0001-0004-0000-000000000004', '44444444-4444-4444-4444-444444444444', 'India Gate Hexagon', 'IITD-S19', 28.6128, 77.2295, ST_SetSRID(ST_MakePoint(77.2295, 28.6128), 4326)::geography),
+			('44444444-0001-0004-0000-000000000005', '44444444-4444-4444-4444-444444444444', 'National Stadium Gate', 'IITD-S20', 28.6135, 77.2360, ST_SetSRID(ST_MakePoint(77.2360, 28.6135), 4326)::geography),
+			('44444444-0001-0005-0000-000000000001', '44444444-4444-4444-4444-444444444444', 'Connaught Place Outer Circle', 'IITD-S21', 28.6328, 77.2195, ST_SetSRID(ST_MakePoint(77.2195, 28.6328), 4326)::geography),
+			('44444444-0001-0005-0000-000000000002', '44444444-4444-4444-4444-444444444444', 'Janpath Market Concourse', 'IITD-S22', 28.6270, 77.2180, ST_SetSRID(ST_MakePoint(77.2180, 28.6270), 4326)::geography),
+			('44444444-0001-0005-0000-000000000003', '44444444-4444-4444-4444-444444444444', 'Barakhamba Road Metro', 'IITD-S23', 28.6300, 77.2250, ST_SetSRID(ST_MakePoint(77.2250, 28.6300), 4326)::geography),
+			('44444444-0001-0005-0000-000000000004', '44444444-4444-4444-4444-444444444444', 'Mandi House Cultural Hub', 'IITD-S24', 28.6255, 77.2340, ST_SetSRID(ST_MakePoint(77.2340, 28.6255), 4326)::geography),
+			('44444444-0001-0005-0000-000000000005', '44444444-4444-4444-4444-444444444444', 'Shivaji Stadium Terminal', 'IITD-S25', 28.6290, 77.2140, ST_SetSRID(ST_MakePoint(77.2140, 28.6290), 4326)::geography),
 			('55555555-0001-0001-0000-000000000001', '55555555-5555-5555-5555-555555555555', 'IISc Main Gate Malleshwaram', 'IISC-S01', 13.0180, 77.5680, ST_SetSRID(ST_MakePoint(77.5680, 13.0180), 4326)::geography),
 			('55555555-0001-0001-0000-000000000002', '55555555-5555-5555-5555-555555555555', 'Yeshwanthpur Terminal', 'IISC-S02', 13.0235, 77.5500, ST_SetSRID(ST_MakePoint(77.5500, 13.0235), 4326)::geography),
 			('55555555-0001-0001-0000-000000000003', '55555555-5555-5555-5555-555555555555', 'Orion Brigade Gateway', 'IISC-S03', 13.0110, 77.5550, ST_SetSRID(ST_MakePoint(77.5550, 13.0110), 4326)::geography),
 			('55555555-0001-0001-0000-000000000004', '55555555-5555-5555-5555-555555555555', 'MG Road Metro', 'IISC-S04', 12.9755, 77.6065, ST_SetSRID(ST_MakePoint(77.6065, 12.9755), 4326)::geography),
 			('55555555-0001-0001-0000-000000000005', '55555555-5555-5555-5555-555555555555', 'Indiranagar Tech Hub', 'IISC-S05', 12.9784, 77.6408, ST_SetSRID(ST_MakePoint(77.6408, 12.9784), 4326)::geography),
-			('66666666-0001-0001-0000-000000000001', '66666666-6666-6666-6666-666666666666', 'KLCC Twin Towers Pick-up', 'APEX-KL', 3.1578, 101.7120, ST_SetSRID(ST_MakePoint(101.7120, 3.1578), 4326)::geography),
-			('66666666-0001-0001-0000-000000000002', '66666666-6666-6666-6666-666666666666', 'Bangsar South Corporate Hub', 'APEX-BS', 3.1110, 101.6660, ST_SetSRID(ST_MakePoint(101.6660, 3.1110), 4326)::geography),
-			('66666666-0001-0001-0000-000000000003', '66666666-6666-6666-6666-666666666666', 'Bukit Jalil Tech Park', 'APEX-BJ', 3.0580, 101.6920, ST_SetSRID(ST_MakePoint(101.6920, 3.0580), 4326)::geography),
-			('66666666-0001-0001-0000-000000000004', '66666666-6666-6666-6666-666666666666', 'Putrajaya Sentral', 'APEX-PS', 2.9315, 101.6705, ST_SetSRID(ST_MakePoint(101.6705, 2.9315), 4326)::geography),
-			('66666666-0001-0001-0000-000000000005', '66666666-6666-6666-6666-666666666666', 'Apex Cyberjaya Campus Gate 1', 'APEX-CY', 2.9215, 101.6550, ST_SetSRID(ST_MakePoint(101.6550, 2.9215), 4326)::geography),
-			('77777777-0001-0001-0000-000000000001', '77777777-7777-7777-7777-777777777777', 'ISBT Kashmere Gate Lounge', 'HAC-KG', 28.6675, 77.2285, ST_SetSRID(ST_MakePoint(77.2285, 28.6675), 4326)::geography),
-			('77777777-0001-0001-0000-000000000002', '77777777-7777-7777-7777-777777777777', 'Murthal Highway Plaza', 'HAC-MP', 29.0280, 77.0720, ST_SetSRID(ST_MakePoint(77.0720, 29.0280), 4326)::geography),
-			('77777777-0001-0001-0000-000000000003', '77777777-7777-7777-7777-777777777777', 'Karnal Lake Oasis', 'HAC-KL', 29.6860, 76.9900, ST_SetSRID(ST_MakePoint(76.9900, 29.6860), 4326)::geography),
-			('77777777-0001-0001-0000-000000000004', '77777777-7777-7777-7777-777777777777', 'Ambala Express Hub', 'HAC-AE', 30.3750, 76.7820, ST_SetSRID(ST_MakePoint(76.7820, 30.3750), 4326)::geography),
-			('77777777-0001-0001-0000-000000000005', '77777777-7777-7777-7777-777777777777', 'Chandigarh Sector 17 Boarding Terminal', 'HAC-CH', 30.7400, 76.7850, ST_SetSRID(ST_MakePoint(76.7850, 30.7400), 4326)::geography)
+			('55555555-0001-0002-0000-000000000001', '55555555-5555-5555-5555-555555555555', 'Yeshwanthpur Circle', 'IISC-S06', 13.0280, 77.5400, ST_SetSRID(ST_MakePoint(77.5400, 13.0280), 4326)::geography),
+			('55555555-0001-0002-0000-000000000002', '55555555-5555-5555-5555-555555555555', 'Mathikere Market', 'IISC-S07', 13.0330, 77.5570, ST_SetSRID(ST_MakePoint(77.5570, 13.0330), 4326)::geography),
+			('55555555-0001-0002-0000-000000000003', '55555555-5555-5555-5555-555555555555', 'BEL Circle', 'IISC-S08', 13.0450, 77.5530, ST_SetSRID(ST_MakePoint(77.5530, 13.0450), 4326)::geography),
+			('55555555-0001-0002-0000-000000000004', '55555555-5555-5555-5555-555555555555', 'Hebbal Flyover', 'IISC-S09', 13.0380, 77.5920, ST_SetSRID(ST_MakePoint(77.5920, 13.0380), 4326)::geography),
+			('55555555-0001-0002-0000-000000000005', '55555555-5555-5555-5555-555555555555', 'Manyata Embassy Park', 'IISC-S10', 13.0480, 77.6200, ST_SetSRID(ST_MakePoint(77.6200, 13.0480), 4326)::geography),
+			('55555555-0001-0003-0000-000000000001', '55555555-5555-5555-5555-555555555555', 'Rajajinagar 1st Block', 'IISC-S11', 13.0030, 77.5540, ST_SetSRID(ST_MakePoint(77.5540, 13.0030), 4326)::geography),
+			('55555555-0001-0003-0000-000000000002', '55555555-5555-5555-5555-555555555555', 'Navrang Theatre', 'IISC-S12', 12.9930, 77.5530, ST_SetSRID(ST_MakePoint(77.5530, 12.9930), 4326)::geography),
+			('55555555-0001-0003-0000-000000000003', '55555555-5555-5555-5555-555555555555', 'Vijayanagar TTMC', 'IISC-S13', 12.9710, 77.5380, ST_SetSRID(ST_MakePoint(77.5380, 12.9710), 4326)::geography),
+			('55555555-0001-0003-0000-000000000004', '55555555-5555-5555-5555-555555555555', 'City Railway Station', 'IISC-S14', 12.9780, 77.5700, ST_SetSRID(ST_MakePoint(77.5700, 12.9780), 4326)::geography),
+			('55555555-0001-0003-0000-000000000005', '55555555-5555-5555-5555-555555555555', 'Majestic Kempegowda Bus Station', 'IISC-S15', 12.9770, 77.5730, ST_SetSRID(ST_MakePoint(77.5730, 12.9770), 4326)::geography),
+			('55555555-0001-0004-0000-000000000001', '55555555-5555-5555-5555-555555555555', 'Malleshwaram 8th Cross', 'IISC-S16', 13.0020, 77.5710, ST_SetSRID(ST_MakePoint(77.5710, 13.0020), 4326)::geography),
+			('55555555-0001-0004-0000-000000000002', '55555555-5555-5555-5555-555555555555', 'Vasanth Nagar', 'IISC-S17', 12.9900, 77.5870, ST_SetSRID(ST_MakePoint(77.5870, 12.9900), 4326)::geography),
+			('55555555-0001-0004-0000-000000000003', '55555555-5555-5555-5555-555555555555', 'Vidhana Soudha', 'IISC-S18', 12.9790, 77.5910, ST_SetSRID(ST_MakePoint(77.5910, 12.9790), 4326)::geography),
+			('55555555-0001-0004-0000-000000000004', '55555555-5555-5555-5555-555555555555', 'Corporation Circle', 'IISC-S19', 12.9670, 77.5880, ST_SetSRID(ST_MakePoint(77.5880, 12.9670), 4326)::geography),
+			('55555555-0001-0004-0000-000000000005', '55555555-5555-5555-5555-555555555555', 'Lalbagh Botanical Garden', 'IISC-S20', 12.9510, 77.5860, ST_SetSRID(ST_MakePoint(77.5860, 12.9510), 4326)::geography),
+			('55555555-0001-0005-0000-000000000001', '55555555-5555-5555-5555-555555555555', 'Indiranagar Double Road', 'IISC-S21', 12.9720, 77.6420, ST_SetSRID(ST_MakePoint(77.6420, 12.9720), 4326)::geography),
+			('55555555-0001-0005-0000-000000000002', '55555555-5555-5555-5555-555555555555', 'Domlur Flyover', 'IISC-S22', 12.9610, 77.6390, ST_SetSRID(ST_MakePoint(77.6390, 12.9610), 4326)::geography),
+			('55555555-0001-0005-0000-000000000003', '55555555-5555-5555-5555-555555555555', 'Sony World Koramangala', 'IISC-S23', 12.9350, 77.6240, ST_SetSRID(ST_MakePoint(77.6240, 12.9350), 4326)::geography),
+			('55555555-0001-0005-0000-000000000004', '55555555-5555-5555-5555-555555555555', 'Koramangala BDA Complex', 'IISC-S24', 12.9340, 77.6180, ST_SetSRID(ST_MakePoint(77.6180, 12.9340), 4326)::geography),
+			('55555555-0001-0005-0000-000000000005', '55555555-5555-5555-5555-555555555555', 'HSR Layout 27th Main', 'IISC-S25', 12.9120, 77.6440, ST_SetSRID(ST_MakePoint(77.6440, 12.9120), 4326)::geography),
+			('66666666-0001-0001-0000-000000000001', '66666666-6666-6666-6666-666666666666', 'KLCC Twin Towers Pick-up', 'APEX-S01', 3.1578, 101.7120, ST_SetSRID(ST_MakePoint(101.7120, 3.1578), 4326)::geography),
+			('66666666-0001-0001-0000-000000000002', '66666666-6666-6666-6666-666666666666', 'Tun Razak Exchange TRX', 'APEX-S02', 3.1420, 101.7185, ST_SetSRID(ST_MakePoint(101.7185, 3.1420), 4326)::geography),
+			('66666666-0001-0001-0000-000000000003', '66666666-6666-6666-6666-666666666666', 'Kuchai Lama Interchange', 'APEX-S03', 3.0890, 101.6880, ST_SetSRID(ST_MakePoint(101.6880, 3.0890), 4326)::geography),
+			('66666666-0001-0001-0000-000000000004', '66666666-6666-6666-6666-666666666666', 'Putrajaya Sentral Interchange', 'APEX-S04', 2.9315, 101.6705, ST_SetSRID(ST_MakePoint(101.6705, 2.9315), 4326)::geography),
+			('66666666-0001-0001-0000-000000000005', '66666666-6666-6666-6666-666666666666', 'Apex Cyberjaya Campus Gate 1', 'APEX-S05', 2.9215, 101.6550, ST_SetSRID(ST_MakePoint(101.6550, 2.9215), 4326)::geography),
+			('66666666-0001-0002-0000-000000000001', '66666666-6666-6666-6666-666666666666', 'Bangsar South Corporate Hub', 'APEX-S06', 3.1110, 101.6660, ST_SetSRID(ST_MakePoint(101.6660, 3.1110), 4326)::geography),
+			('66666666-0001-0002-0000-000000000002', '66666666-6666-6666-6666-666666666666', 'KL Gateway Concourse', 'APEX-S07', 3.1140, 101.6625, ST_SetSRID(ST_MakePoint(101.6625, 3.1140), 4326)::geography),
+			('66666666-0001-0002-0000-000000000003', '66666666-6666-6666-6666-666666666666', 'Mid Valley Megamall', 'APEX-S08', 3.1180, 101.6775, ST_SetSRID(ST_MakePoint(101.6775, 3.1180), 4326)::geography),
+			('66666666-0001-0002-0000-000000000004', '66666666-6666-6666-6666-666666666666', 'Old Klang Road Commerce', 'APEX-S09', 3.0980, 101.6750, ST_SetSRID(ST_MakePoint(101.6750, 3.0980), 4326)::geography),
+			('66666666-0001-0002-0000-000000000005', '66666666-6666-6666-6666-666666666666', 'Seputeh Transit Point', 'APEX-S10', 3.1130, 101.6810, ST_SetSRID(ST_MakePoint(101.6810, 3.1130), 4326)::geography),
+			('66666666-0001-0003-0000-000000000001', '66666666-6666-6666-6666-666666666666', 'Bukit Jalil Tech Park', 'APEX-S11', 3.0580, 101.6920, ST_SetSRID(ST_MakePoint(101.6920, 3.0580), 4326)::geography),
+			('66666666-0001-0003-0000-000000000002', '66666666-6666-6666-6666-666666666666', 'TPM Innovation Centre', 'APEX-S12', 3.0510, 101.6935, ST_SetSRID(ST_MakePoint(101.6935, 3.0510), 4326)::geography),
+			('66666666-0001-0003-0000-000000000003', '66666666-6666-6666-6666-666666666666', 'Bukit Jalil National Stadium', 'APEX-S13', 3.0590, 101.6910, ST_SetSRID(ST_MakePoint(101.6910, 3.0590), 4326)::geography),
+			('66666666-0001-0003-0000-000000000004', '66666666-6666-6666-6666-666666666666', 'Sri Petaling Concourse', 'APEX-S14', 3.0680, 101.6960, ST_SetSRID(ST_MakePoint(101.6960, 3.0680), 4326)::geography),
+			('66666666-0001-0003-0000-000000000005', '66666666-6666-6666-6666-666666666666', 'Pavilion Bukit Jalil Galleria', 'APEX-S15', 3.0515, 101.6710, ST_SetSRID(ST_MakePoint(101.6710, 3.0515), 4326)::geography),
+			('66666666-0001-0004-0000-000000000001', '66666666-6666-6666-6666-666666666666', 'Putrajaya Sentral North', 'APEX-S16', 2.9330, 101.6710, ST_SetSRID(ST_MakePoint(101.6710, 2.9330), 4326)::geography),
+			('66666666-0001-0004-0000-000000000002', '66666666-6666-6666-6666-666666666666', 'Ministry of Finance Precinct 2', 'APEX-S17', 2.9275, 101.6890, ST_SetSRID(ST_MakePoint(101.6890, 2.9275), 4326)::geography),
+			('66666666-0001-0004-0000-000000000003', '66666666-6666-6666-6666-666666666666', 'Perdana Putra Complex', 'APEX-S18', 2.9380, 101.6935, ST_SetSRID(ST_MakePoint(101.6935, 2.9380), 4326)::geography),
+			('66666666-0001-0004-0000-000000000004', '66666666-6666-6666-6666-666666666666', 'Alamanda Shopping Centre', 'APEX-S19', 2.9400, 101.7120, ST_SetSRID(ST_MakePoint(101.7120, 2.9400), 4326)::geography),
+			('66666666-0001-0004-0000-000000000005', '66666666-6666-6666-6666-666666666666', 'Putrajaya Lake Promenade', 'APEX-S20', 2.9240, 101.6820, ST_SetSRID(ST_MakePoint(101.6820, 2.9240), 4326)::geography),
+			('66666666-0001-0005-0000-000000000001', '66666666-6666-6666-6666-666666666666', 'Apex Cyberjaya South Gate', 'APEX-S21', 2.9180, 101.6520, ST_SetSRID(ST_MakePoint(101.6520, 2.9180), 4326)::geography),
+			('66666666-0001-0005-0000-000000000002', '66666666-6666-6666-6666-666666666666', 'DPulze Shopping Centre', 'APEX-S22', 2.9215, 101.6505, ST_SetSRID(ST_MakePoint(101.6505, 2.9215), 4326)::geography),
+			('66666666-0001-0005-0000-000000000003', '66666666-6666-6666-6666-666666666666', 'Multimedia University MMU', 'APEX-S23', 2.9270, 101.6420, ST_SetSRID(ST_MakePoint(101.6420, 2.9270), 4326)::geography),
+			('66666666-0001-0005-0000-000000000004', '66666666-6666-6666-6666-666666666666', 'Cyberjaya City Centre MRT', 'APEX-S24', 2.9350, 101.6610, ST_SetSRID(ST_MakePoint(101.6610, 2.9350), 4326)::geography),
+			('66666666-0001-0005-0000-000000000005', '66666666-6666-6666-6666-666666666666', 'Cyberview Tech Spine', 'APEX-S25', 2.9310, 101.6560, ST_SetSRID(ST_MakePoint(101.6560, 2.9310), 4326)::geography),
+			('77777777-0001-0001-0000-000000000001', '77777777-7777-7777-7777-777777777777', 'ISBT Kashmere Gate Lounge', 'HAC-S01', 28.6675, 77.2285, ST_SetSRID(ST_MakePoint(77.2285, 28.6675), 4326)::geography),
+			('77777777-0001-0001-0000-000000000002', '77777777-7777-7777-7777-777777777777', 'Majnu Ka Tilla Boarding', 'HAC-S02', 28.7015, 77.2270, ST_SetSRID(ST_MakePoint(77.2270, 28.7015), 4326)::geography),
+			('77777777-0001-0001-0000-000000000003', '77777777-7777-7777-7777-777777777777', 'Singhu Border Transit', 'HAC-S03', 28.8280, 77.1350, ST_SetSRID(ST_MakePoint(77.1350, 28.8280), 4326)::geography),
+			('77777777-0001-0001-0000-000000000004', '77777777-7777-7777-7777-777777777777', 'Sonipat Gateway', 'HAC-S04', 28.9800, 77.0900, ST_SetSRID(ST_MakePoint(77.0900, 28.9800), 4326)::geography),
+			('77777777-0001-0001-0000-000000000005', '77777777-7777-7777-7777-777777777777', 'Murthal Highway Plaza', 'HAC-S05', 29.0280, 77.0720, ST_SetSRID(ST_MakePoint(77.0720, 29.0280), 4326)::geography),
+			('77777777-0001-0002-0000-000000000001', '77777777-7777-7777-7777-777777777777', 'Murthal North Tollway', 'HAC-S06', 29.0500, 77.0650, ST_SetSRID(ST_MakePoint(77.0650, 29.0500), 4326)::geography),
+			('77777777-0001-0002-0000-000000000002', '77777777-7777-7777-7777-777777777777', 'Samalkha Highway Halt', 'HAC-S07', 29.2300, 77.0100, ST_SetSRID(ST_MakePoint(77.0100, 29.2300), 4326)::geography),
+			('77777777-0001-0002-0000-000000000003', '77777777-7777-7777-7777-777777777777', 'Panipat Toll Plaza', 'HAC-S08', 29.3900, 76.9700, ST_SetSRID(ST_MakePoint(76.9700, 29.3900), 4326)::geography),
+			('77777777-0001-0002-0000-000000000004', '77777777-7777-7777-7777-777777777777', 'Gharaunda Express Hub', 'HAC-S09', 29.5400, 76.9750, ST_SetSRID(ST_MakePoint(76.9750, 29.5400), 4326)::geography),
+			('77777777-0001-0002-0000-000000000005', '77777777-7777-7777-7777-777777777777', 'Karnal Lake Oasis', 'HAC-S10', 29.6860, 76.9900, ST_SetSRID(ST_MakePoint(76.9900, 29.6860), 4326)::geography),
+			('77777777-0001-0003-0000-000000000001', '77777777-7777-7777-7777-777777777777', 'Karnal Cantt Crossing', 'HAC-S11', 29.7050, 76.9850, ST_SetSRID(ST_MakePoint(76.9850, 29.7050), 4326)::geography),
+			('77777777-0001-0003-0000-000000000002', '77777777-7777-7777-7777-777777777777', 'Taraori Heritage Point', 'HAC-S12', 29.8050, 76.9300, ST_SetSRID(ST_MakePoint(76.9300, 29.8050), 4326)::geography),
+			('77777777-0001-0003-0000-000000000003', '77777777-7777-7777-7777-777777777777', 'Kurukshetra Pipli Junction', 'HAC-S13', 29.9700, 76.8850, ST_SetSRID(ST_MakePoint(76.8850, 29.9700), 4326)::geography),
+			('77777777-0001-0003-0000-000000000004', '77777777-7777-7777-7777-777777777777', 'Shahbad Markanda Plaza', 'HAC-S14', 30.1700, 76.8700, ST_SetSRID(ST_MakePoint(76.8700, 30.1700), 4326)::geography),
+			('77777777-0001-0003-0000-000000000005', '77777777-7777-7777-7777-777777777777', 'Ambala Express Hub', 'HAC-S15', 30.3750, 76.7820, ST_SetSRID(ST_MakePoint(76.7820, 30.3750), 4326)::geography),
+			('77777777-0001-0004-0000-000000000001', '77777777-7777-7777-7777-777777777777', 'Ambala Cantt Junction', 'HAC-S16', 30.3600, 76.7800, ST_SetSRID(ST_MakePoint(76.7800, 30.3600), 4326)::geography),
+			('77777777-0001-0004-0000-000000000002', '77777777-7777-7777-7777-777777777777', 'Dera Bassi Highway Halt', 'HAC-S17', 30.5850, 76.8400, ST_SetSRID(ST_MakePoint(76.8400, 30.5850), 4326)::geography),
+			('77777777-0001-0004-0000-000000000003', '77777777-7777-7777-7777-777777777777', 'Zirakpur Flyover Concourse', 'HAC-S18', 30.6420, 76.8200, ST_SetSRID(ST_MakePoint(76.8200, 30.6420), 4326)::geography),
+			('77777777-0001-0004-0000-000000000004', '77777777-7777-7777-7777-777777777777', 'Tribune Chowk Chandigarh', 'HAC-S19', 30.7050, 76.7900, ST_SetSRID(ST_MakePoint(76.7900, 30.7050), 4326)::geography),
+			('77777777-0001-0004-0000-000000000005', '77777777-7777-7777-7777-777777777777', 'Chandigarh Sector 17 Boarding Terminal', 'HAC-S20', 30.7400, 76.7850, ST_SetSRID(ST_MakePoint(76.7850, 30.7400), 4326)::geography),
+			('77777777-0001-0005-0000-000000000001', '77777777-7777-7777-7777-777777777777', 'Sector 43 ISBT Chandigarh', 'HAC-S21', 30.7180, 76.7450, ST_SetSRID(ST_MakePoint(76.7450, 30.7180), 4326)::geography),
+			('77777777-0001-0005-0000-000000000002', '77777777-7777-7777-7777-777777777777', 'Panchkula Sector 5 Concourse', 'HAC-S22', 30.6930, 76.8550, ST_SetSRID(ST_MakePoint(76.8550, 30.6930), 4326)::geography),
+			('77777777-0001-0005-0000-000000000003', '77777777-7777-7777-7777-777777777777', 'Pinjore Heritage Gardens', 'HAC-S23', 30.7950, 76.9150, ST_SetSRID(ST_MakePoint(76.9150, 30.7950), 4326)::geography),
+			('77777777-0001-0005-0000-000000000004', '77777777-7777-7777-7777-777777777777', 'Kalka Railway Station Gateway', 'HAC-S24', 30.8350, 76.9380, ST_SetSRID(ST_MakePoint(76.9380, 30.8350), 4326)::geography),
+			('77777777-0001-0005-0000-000000000005', '77777777-7777-7777-7777-777777777777', 'Timber Trail Parwanoo Ascent', 'HAC-S25', 30.8490, 76.9680, ST_SetSRID(ST_MakePoint(76.9680, 30.8490), 4326)::geography)
 		ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, code = EXCLUDED.code, latitude = EXCLUDED.latitude, longitude = EXCLUDED.longitude, location = EXCLUDED.location`,
 		`INSERT INTO routes (id, tenant_id, code, name, origin, destination, distance_km, estimated_minutes) VALUES
-			('11111111-0002-0001-0000-000000000001', '11111111-1111-1111-1111-111111111111', 'KL-CENTRAL-01', 'KL Sentral Express Corridor', 'Rimba Ilmu Botanic Garden', 'KL Sentral Transit Hub', 9.2, 28),
-			('11111111-0002-0001-0000-000000000002', '11111111-1111-1111-1111-111111111111', 'KL-MIDVALLEY-02', 'Mid Valley Commuter Link', 'Dewan Tunku Canselor', 'Rimba Ilmu Botanic Garden', 8.5, 25),
-			('11111111-0002-0001-0000-000000000003', '11111111-1111-1111-1111-111111111111', 'KL-MEDICAL-03', 'Medical Centre Green Spine', 'UM Medical Centre', 'Dewan Tunku Canselor', 7.8, 22),
-			('11111111-0002-0001-0000-000000000004', '11111111-1111-1111-1111-111111111111', 'KL-BOTANIC-04', 'Botanic Garden Loop', 'Mid Valley Southpoint', 'UM Medical Centre', 8.1, 24),
-			('11111111-0002-0001-0000-000000000005', '11111111-1111-1111-1111-111111111111', 'KL-PANTAI-05', 'Pantai Gateway Express', 'KL Sentral Transit Hub', 'Mid Valley Southpoint', 9.0, 26),
-			('22222222-0002-0001-0000-000000000001', '22222222-2222-2222-2222-222222222222', 'SG-HARBOUR-01', 'Kent Ridge Harbour Corridor', 'UTown Green', 'VivoCity HarbourFront', 12.8, 32),
-			('22222222-0002-0001-0000-000000000002', '22222222-2222-2222-2222-222222222222', 'SG-UTOWN-02', 'UTown Internal Express', 'Kent Ridge MRT', 'UTown Green', 10.4, 26),
-			('22222222-0002-0001-0000-000000000003', '22222222-2222-2222-2222-222222222222', 'SG-SCIENCE-03', 'Science Park Tech Spine', 'Biopolis One-North', 'Kent Ridge MRT', 11.2, 28),
-			('22222222-0002-0001-0000-000000000004', '22222222-2222-2222-2222-222222222222', 'SG-BIOPOLIS-04', 'Biopolis Innovation Loop', 'Science Park II', 'Biopolis One-North', 9.8, 24),
-			('22222222-0002-0001-0000-000000000005', '22222222-2222-2222-2222-222222222222', 'SG-CLEMENTI-05', 'Clementi Metro Shuttle', 'VivoCity HarbourFront', 'Science Park II', 12.0, 30),
-			('33333333-0002-0001-0000-000000000001', '33333333-3333-3333-3333-333333333333', 'TYO-METRO-01', 'Hongo Marunouchi Central Line', 'Hongo Red Gate', 'Komaba Research Campus', 14.5, 38),
-			('33333333-0002-0001-0000-000000000002', '33333333-3333-3333-3333-333333333333', 'TYO-UENO-02', 'Ueno Park Connector', 'Ueno Park Station', 'Hongo Red Gate', 11.0, 28),
-			('33333333-0002-0001-0000-000000000003', '33333333-3333-3333-3333-333333333333', 'TYO-AKIHABARA-03', 'Akihabara Express', 'Akihabara Electric Town', 'Ueno Park Station', 12.5, 30),
-			('33333333-0002-0001-0000-000000000004', '33333333-3333-3333-3333-333333333333', 'TYO-HONGO-04', 'Marunouchi Loop', 'Marunouchi Central', 'Akihabara Electric Town', 10.8, 26),
-			('33333333-0002-0001-0000-000000000005', '33333333-3333-3333-3333-333333333333', 'TYO-KOMABA-05', 'Komaba Research Link', 'Komaba Research Campus', 'Marunouchi Central', 13.5, 34),
-			('44444444-0002-0001-0000-000000000001', '44444444-4444-4444-4444-444444444444', 'DEL-CP-01', 'Hauz Khas Connaught Corridor', 'IIT Main Gate Hauz Khas', 'Connaught Place Outer Circle', 11.2, 35),
-			('44444444-0002-0001-0000-000000000002', '44444444-4444-4444-4444-444444444444', 'DEL-AIIMS-02', 'AIIMS Metro Express', 'AIIMS Safdarjung', 'IIT Main Gate Hauz Khas', 9.5, 28),
-			('44444444-0002-0001-0000-000000000003', '44444444-4444-4444-4444-444444444444', 'DEL-INA-03', 'INA Market Spine', 'INA Metro Hub', 'AIIMS Safdarjung', 10.0, 30),
-			('44444444-0002-0001-0000-000000000004', '44444444-4444-4444-4444-444444444444', 'DEL-LODHI-04', 'Lodhi Road Connector', 'Lodhi Road Complex', 'INA Metro Hub', 9.0, 26),
-			('44444444-0002-0001-0000-000000000005', '44444444-4444-4444-4444-444444444444', 'DEL-HAUZKHAS-05', 'Connaught Place Line', 'Connaught Place Outer Circle', 'Lodhi Road Complex', 11.5, 34),
+			('11111111-0002-0001-0000-000000000001', '11111111-1111-1111-1111-111111111111', 'KL-CENTRAL-01', 'KL Sentral Express Corridor', 'Rimba Ilmu Botanic Garden', 'Academy of Islamic Studies', 9.2, 28),
+			('11111111-0002-0001-0000-000000000002', '11111111-1111-1111-1111-111111111111', 'KL-PANTAI-02', 'Medical Centre Pantai Link', 'UM Medical Centre Gate', 'Bangsar South Horizon', 8.5, 25),
+			('11111111-0002-0001-0000-000000000003', '11111111-1111-1111-1111-111111111111', 'KL-MIDVALLEY-03', 'Mid Valley Commuter Link', 'Mid Valley North Court', 'Mid Valley Southpoint', 7.8, 22),
+			('11111111-0002-0001-0000-000000000004', '11111111-1111-1111-1111-111111111111', 'KL-SENTRAL-04', 'KL Sentral Direct Express', 'KL Sentral Departure Concourse', 'KL Sentral Monorail Terminus', 8.1, 24),
+			('11111111-0002-0001-0000-000000000005', '11111111-1111-1111-1111-111111111111', 'KL-DAMANSARA-05', 'Damansara Heights Shuttle', 'Pusat Bandar Damansara MRT', 'Bukit Damansara Residential Link', 9.0, 26),
+			('22222222-0002-0001-0000-000000000001', '22222222-2222-2222-2222-222222222222', 'SG-HARBOUR-01', 'Kent Ridge Harbour Corridor', 'UTown Green', 'Prince George Park Terminus', 12.8, 32),
+			('22222222-0002-0001-0000-000000000002', '22222222-2222-2222-2222-222222222222', 'SG-UTOWN-02', 'Kent Ridge NUH Medical Spine', 'Kent Ridge MRT Station', 'Faculty of Dentistry Hub', 10.4, 26),
+			('22222222-0002-0001-0000-000000000003', '22222222-2222-2222-2222-222222222222', 'SG-SCIENCE-03', 'Biopolis One-North Innovation', 'Biopolis One-North Central', 'LaunchPad One-North', 11.2, 28),
+			('22222222-0002-0001-0000-000000000004', '22222222-2222-2222-2222-222222222222', 'SG-BIOPOLIS-04', 'Science Park II Tech Link', 'Science Park II The Alpha', 'Science Park Drive Loop', 9.8, 24),
+			('22222222-0002-0001-0000-000000000005', '22222222-2222-2222-2222-222222222222', 'SG-CLEMENTI-05', 'Pasir Panjang HarbourFront', 'Pasir Panjang Terminal', 'VivoCity HarbourFront', 12.0, 30),
+			('33333333-0002-0001-0000-000000000001', '33333333-3333-3333-3333-333333333333', 'TYO-METRO-01', 'Hongo Ueno Academic Spine', 'Hongo Red Gate Akamon', 'Ueno Park Station Concourse', 14.5, 38),
+			('33333333-0002-0001-0000-000000000002', '33333333-3333-3333-3333-333333333333', 'TYO-UENO-02', 'Akihabara Ochanomizu Tech Hub', 'Ochanomizu Bridge', 'Iwamotocho Crossing', 11.0, 28),
+			('33333333-0002-0001-0000-000000000003', '33333333-3333-3333-3333-333333333333', 'TYO-AKIHABARA-03', 'Marunouchi Tokyo Central', 'Otemachi Financial Tower', 'Imperial Palace Outer Garden', 12.5, 30),
+			('33333333-0002-0001-0000-000000000004', '33333333-3333-3333-3333-333333333333', 'TYO-HONGO-04', 'Bunkyo Korakuen Loop', 'Kasuga Metro Hub', 'Todai Yayoi Campus Gate', 10.8, 26),
+			('33333333-0002-0001-0000-000000000005', '33333333-3333-3333-3333-333333333333', 'TYO-KOMABA-05', 'Shibuya Komaba Research Link', 'Komaba Research Campus', 'Shibuya Scramble Crossing', 13.5, 34),
+			('44444444-0002-0001-0000-000000000001', '44444444-4444-4444-4444-444444444444', 'DEL-CP-01', 'Hauz Khas Safdarjung Spine', 'IIT Main Gate Hauz Khas', 'AIIMS Safdarjung Terminal', 11.2, 35),
+			('44444444-0002-0001-0000-000000000002', '44444444-4444-4444-4444-444444444444', 'DEL-AIIMS-02', 'South Extension INA Loop', 'INA Metro Hub', 'Andrews Ganj Crossing', 9.5, 28),
+			('44444444-0002-0001-0000-000000000003', '44444444-4444-4444-4444-444444444444', 'DEL-INA-03', 'Lodhi Road Heritage Corridor', 'Lodhi Road Complex', 'Humayun Tomb Heritage Gate', 10.0, 30),
+			('44444444-0002-0001-0000-000000000004', '44444444-4444-4444-4444-444444444444', 'DEL-LODHI-04', 'Central Secretariat Corridor', 'Central Secretariat Metro', 'National Stadium Gate', 9.0, 26),
+			('44444444-0002-0001-0000-000000000005', '44444444-4444-4444-4444-444444444444', 'DEL-HAUZKHAS-05', 'Connaught Place Line', 'Connaught Place Outer Circle', 'Shivaji Stadium Terminal', 11.5, 34),
 			('55555555-0002-0001-0000-000000000001', '55555555-5555-5555-5555-555555555555', 'BLR-TECH-01', 'Malleshwaram Indiranagar Spine', 'IISc Main Gate Malleshwaram', 'Indiranagar Tech Hub', 13.8, 42),
-			('55555555-0002-0001-0000-000000000002', '55555555-5555-5555-5555-555555555555', 'BLR-YESHW-02', 'Yeshwanthpur Express', 'Yeshwanthpur Terminal', 'IISc Main Gate Malleshwaram', 11.5, 35),
-			('55555555-0002-0001-0000-000000000003', '55555555-5555-5555-5555-555555555555', 'BLR-ORION-03', 'Brigade Gateway Link', 'Orion Brigade Gateway', 'Yeshwanthpur Terminal', 10.8, 32),
-			('55555555-0002-0001-0000-000000000004', '55555555-5555-5555-5555-555555555555', 'BLR-MGROAD-04', 'MG Road Central', 'MG Road Metro', 'Orion Brigade Gateway', 12.0, 36),
-			('55555555-0002-0001-0000-000000000005', '55555555-5555-5555-5555-555555555555', 'BLR-INDIRA-05', 'Indiranagar Tech Line', 'Indiranagar Tech Hub', 'MG Road Metro', 13.2, 40),
+			('55555555-0002-0001-0000-000000000002', '55555555-5555-5555-5555-555555555555', 'BLR-YESHW-02', 'Yeshwanthpur Manyata Tech Link', 'Yeshwanthpur Circle', 'Manyata Embassy Park', 11.5, 35),
+			('55555555-0002-0001-0000-000000000003', '55555555-5555-5555-5555-555555555555', 'BLR-ORION-03', 'Rajajinagar Majestic West Spine', 'Rajajinagar 1st Block', 'Majestic Kempegowda Bus Station', 10.8, 32),
+			('55555555-0002-0001-0000-000000000004', '55555555-5555-5555-5555-555555555555', 'BLR-MGROAD-04', 'Malleshwaram Vidhana Soudha', 'Malleshwaram 8th Cross', 'Lalbagh Botanical Garden', 12.0, 36),
+			('55555555-0002-0001-0000-000000000005', '55555555-5555-5555-5555-555555555555', 'BLR-INDIRA-05', 'Indiranagar Koramangala South', 'Indiranagar Double Road', 'HSR Layout 27th Main', 13.2, 40),
 			('66666666-0002-0001-0000-000000000001', '66666666-6666-6666-6666-666666666666', 'APEX-TECH-01', 'KLCC Cyberjaya Executive Link', 'KLCC Twin Towers Pick-up', 'Apex Cyberjaya Campus Gate 1', 31.4, 52),
-			('66666666-0002-0001-0000-000000000002', '66666666-6666-6666-6666-666666666666', 'APEX-PUTRA-02', 'Putrajaya Sentral Link', 'Bangsar South Corporate Hub', 'KLCC Twin Towers Pick-up', 24.5, 42),
-			('66666666-0002-0001-0000-000000000003', '66666666-6666-6666-6666-666666666666', 'APEX-JALIL-03', 'Bukit Jalil Concourse', 'Bukit Jalil Tech Park', 'Bangsar South Corporate Hub', 22.0, 38),
-			('66666666-0002-0001-0000-000000000004', '66666666-6666-6666-6666-666666666666', 'APEX-BANGSAR-04', 'Bangsar South Express', 'Putrajaya Sentral', 'Bukit Jalil Tech Park', 26.0, 44),
-			('66666666-0002-0001-0000-000000000005', '66666666-6666-6666-6666-666666666666', 'APEX-CYBER-05', 'Cyberjaya Main Spine', 'Apex Cyberjaya Campus Gate 1', 'Putrajaya Sentral', 28.5, 48),
-			('77777777-0002-0001-0000-000000000001', '77777777-7777-7777-7777-777777777777', 'HAC-GT-01', 'Grand Trunk Alpine Expressway', 'ISBT Kashmere Gate Lounge', 'Chandigarh Sector 17 Boarding Terminal', 238.0, 240),
-			('77777777-0002-0001-0000-000000000002', '77777777-7777-7777-7777-777777777777', 'HAC-MURTHAL-02', 'Valley View Concourse', 'Murthal Highway Plaza', 'ISBT Kashmere Gate Lounge', 190.0, 195),
-			('77777777-0002-0001-0000-000000000003', '77777777-7777-7777-7777-777777777777', 'HAC-KARNAL-03', 'Glacier Highway', 'Karnal Lake Oasis', 'Murthal Highway Plaza', 165.0, 170),
-			('77777777-0002-0001-0000-000000000004', '77777777-7777-7777-7777-777777777777', 'HAC-AMBALA-04', 'Kashmere Gate Express', 'Ambala Express Hub', 'Karnal Lake Oasis', 120.0, 125),
-			('77777777-0002-0001-0000-000000000005', '77777777-7777-7777-7777-777777777777', 'HAC-CHANDI-05', 'Chandigarh Concourse', 'Chandigarh Sector 17 Boarding Terminal', 'Ambala Express Hub', 95.0, 100)
-		ON CONFLICT (id) DO UPDATE SET
-			name = EXCLUDED.name,
-			code = EXCLUDED.code,
-			origin = EXCLUDED.origin,
-			destination = EXCLUDED.destination,
-			distance_km = EXCLUDED.distance_km,
-			estimated_minutes = EXCLUDED.estimated_minutes`,
+			('66666666-0002-0001-0000-000000000002', '66666666-6666-6666-6666-666666666666', 'APEX-PUTRA-02', 'Bangsar South Mid Valley', 'Bangsar South Corporate Hub', 'Seputeh Transit Point', 24.5, 42),
+			('66666666-0002-0001-0000-000000000003', '66666666-6666-6666-6666-666666666666', 'APEX-JALIL-03', 'Bukit Jalil Tech Park Concourse', 'Bukit Jalil Tech Park', 'Pavilion Bukit Jalil Galleria', 22.0, 38),
+			('66666666-0002-0001-0000-000000000004', '66666666-6666-6666-6666-666666666666', 'APEX-BANGSAR-04', 'Putrajaya Core Government Spine', 'Putrajaya Sentral North', 'Putrajaya Lake Promenade', 26.0, 44),
+			('66666666-0002-0001-0000-000000000005', '66666666-6666-6666-6666-666666666666', 'APEX-CYBER-05', 'Cyberjaya Innovation District', 'Apex Cyberjaya South Gate', 'Cyberview Tech Spine', 28.5, 48),
+			('77777777-0002-0001-0000-000000000001', '77777777-7777-7777-7777-777777777777', 'HAC-GT-01', 'Kashmere Gate Murthal Express', 'ISBT Kashmere Gate Lounge', 'Murthal Highway Plaza', 238.0, 240),
+			('77777777-0002-0001-0000-000000000002', '77777777-7777-7777-7777-777777777777', 'HAC-MURTHAL-02', 'Panipat Karnal Highway', 'Murthal North Tollway', 'Karnal Lake Oasis', 190.0, 195),
+			('77777777-0002-0001-0000-000000000003', '77777777-7777-7777-7777-777777777777', 'HAC-KARNAL-03', 'Kurukshetra Ambala Connector', 'Karnal Cantt Crossing', 'Ambala Express Hub', 165.0, 170),
+			('77777777-0002-0001-0000-000000000004', '77777777-7777-7777-7777-777777777777', 'HAC-AMBALA-04', 'Ambala Chandigarh Urban Spine', 'Ambala Cantt Junction', 'Chandigarh Sector 17 Boarding Terminal', 120.0, 125),
+			('77777777-0002-0001-0000-000000000005', '77777777-7777-7777-7777-777777777777', 'HAC-CHANDI-05', 'Chandigarh Kalka Himalayan', 'Sector 43 ISBT Chandigarh', 'Timber Trail Parwanoo Ascent', 95.0, 100)
+		ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, code = EXCLUDED.code, origin = EXCLUDED.origin, destination = EXCLUDED.destination, distance_km = EXCLUDED.distance_km, estimated_minutes = EXCLUDED.estimated_minutes`,
 		`INSERT INTO buses (id, tenant_id, route_id, fleet_code, plate_number, model, capacity, status, trip_status, current_stop_sequence, progress_pct, route_variant, traffic_level, delay_minutes, dwell_seconds, segment_progress, route_progress) VALUES
 			('11111111-0003-0001-0000-000000000001', '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000001', 'UM-A01', 'WYY-1001', 'Scania K250UB Low Floor', 40, 'ACTIVE', 'IN_TRANSIT', 1, 15.0, 'PRIMARY_ROUTE_1', 'NORMAL', 0.0, 20, 0.15, 0.15),
 			('11111111-0003-0001-0000-000000000002', '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000002', 'UM-A02', 'WYY-1002', 'Volvo B7RLE Rapid City', 40, 'ACTIVE', 'IN_TRANSIT', 2, 35.0, 'ALTERNATE_ROUTE_2', 'HEAVY', 4.5, 25, 0.35, 0.35),
@@ -5666,198 +5857,186 @@ func (s *Server) seedMultiSectorWorkspaces(ctx context.Context) error {
 			(gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000001', '11111111-0001-0001-0000-000000000003', 3, 13),
 			(gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000001', '11111111-0001-0001-0000-000000000004', 4, 20),
 			(gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000001', '11111111-0001-0001-0000-000000000005', 5, 27),
-			(gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000002', '11111111-0001-0001-0000-000000000002', 1, 0),
-			(gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000002', '11111111-0001-0001-0000-000000000003', 2, 7),
-			(gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000002', '11111111-0001-0001-0000-000000000004', 3, 14),
-			(gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000002', '11111111-0001-0001-0000-000000000005', 4, 21),
-			(gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000002', '11111111-0001-0001-0000-000000000001', 5, 28),
-			(gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000003', '11111111-0001-0001-0000-000000000003', 1, 0),
-			(gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000003', '11111111-0001-0001-0000-000000000004', 2, 6),
-			(gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000003', '11111111-0001-0001-0000-000000000005', 3, 13),
-			(gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000003', '11111111-0001-0001-0000-000000000001', 4, 20),
-			(gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000003', '11111111-0001-0001-0000-000000000002', 5, 26),
-			(gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000004', '11111111-0001-0001-0000-000000000004', 1, 0),
-			(gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000004', '11111111-0001-0001-0000-000000000005', 2, 7),
-			(gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000004', '11111111-0001-0001-0000-000000000001', 3, 14),
-			(gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000004', '11111111-0001-0001-0000-000000000002', 4, 21),
-			(gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000004', '11111111-0001-0001-0000-000000000003', 5, 27),
-			(gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000005', '11111111-0001-0001-0000-000000000005', 1, 0),
-			(gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000005', '11111111-0001-0001-0000-000000000001', 2, 6),
-			(gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000005', '11111111-0001-0001-0000-000000000002', 3, 12),
-			(gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000005', '11111111-0001-0001-0000-000000000003', 4, 19),
-			(gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000005', '11111111-0001-0001-0000-000000000004', 5, 25),
+			(gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000002', '11111111-0001-0002-0000-000000000001', 1, 0),
+			(gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000002', '11111111-0001-0002-0000-000000000002', 2, 6),
+			(gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000002', '11111111-0001-0002-0000-000000000003', 3, 13),
+			(gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000002', '11111111-0001-0002-0000-000000000004', 4, 20),
+			(gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000002', '11111111-0001-0002-0000-000000000005', 5, 27),
+			(gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000003', '11111111-0001-0003-0000-000000000001', 1, 0),
+			(gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000003', '11111111-0001-0003-0000-000000000002', 2, 6),
+			(gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000003', '11111111-0001-0003-0000-000000000003', 3, 13),
+			(gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000003', '11111111-0001-0003-0000-000000000004', 4, 20),
+			(gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000003', '11111111-0001-0003-0000-000000000005', 5, 27),
+			(gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000004', '11111111-0001-0004-0000-000000000001', 1, 0),
+			(gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000004', '11111111-0001-0004-0000-000000000002', 2, 6),
+			(gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000004', '11111111-0001-0004-0000-000000000003', 3, 13),
+			(gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000004', '11111111-0001-0004-0000-000000000004', 4, 20),
+			(gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000004', '11111111-0001-0004-0000-000000000005', 5, 27),
+			(gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000005', '11111111-0001-0005-0000-000000000001', 1, 0),
+			(gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000005', '11111111-0001-0005-0000-000000000002', 2, 6),
+			(gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000005', '11111111-0001-0005-0000-000000000003', 3, 13),
+			(gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000005', '11111111-0001-0005-0000-000000000004', 4, 20),
+			(gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-0002-0001-0000-000000000005', '11111111-0001-0005-0000-000000000005', 5, 27),
 			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000001', '22222222-0001-0001-0000-000000000001', 1, 0),
 			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000001', '22222222-0001-0001-0000-000000000002', 2, 6),
 			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000001', '22222222-0001-0001-0000-000000000003', 3, 13),
 			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000001', '22222222-0001-0001-0000-000000000004', 4, 20),
 			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000001', '22222222-0001-0001-0000-000000000005', 5, 27),
-			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000002', '22222222-0001-0001-0000-000000000002', 1, 0),
-			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000002', '22222222-0001-0001-0000-000000000003', 2, 7),
-			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000002', '22222222-0001-0001-0000-000000000004', 3, 14),
-			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000002', '22222222-0001-0001-0000-000000000005', 4, 21),
-			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000002', '22222222-0001-0001-0000-000000000001', 5, 28),
-			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000003', '22222222-0001-0001-0000-000000000003', 1, 0),
-			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000003', '22222222-0001-0001-0000-000000000004', 2, 6),
-			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000003', '22222222-0001-0001-0000-000000000005', 3, 13),
-			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000003', '22222222-0001-0001-0000-000000000001', 4, 20),
-			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000003', '22222222-0001-0001-0000-000000000002', 5, 26),
-			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000004', '22222222-0001-0001-0000-000000000004', 1, 0),
-			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000004', '22222222-0001-0001-0000-000000000005', 2, 7),
-			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000004', '22222222-0001-0001-0000-000000000001', 3, 14),
-			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000004', '22222222-0001-0001-0000-000000000002', 4, 21),
-			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000004', '22222222-0001-0001-0000-000000000003', 5, 27),
-			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000005', '22222222-0001-0001-0000-000000000005', 1, 0),
-			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000005', '22222222-0001-0001-0000-000000000001', 2, 6),
-			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000005', '22222222-0001-0001-0000-000000000002', 3, 12),
-			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000005', '22222222-0001-0001-0000-000000000003', 4, 19),
-			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000005', '22222222-0001-0001-0000-000000000004', 5, 25),
+			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000002', '22222222-0001-0002-0000-000000000001', 1, 0),
+			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000002', '22222222-0001-0002-0000-000000000002', 2, 6),
+			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000002', '22222222-0001-0002-0000-000000000003', 3, 13),
+			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000002', '22222222-0001-0002-0000-000000000004', 4, 20),
+			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000002', '22222222-0001-0002-0000-000000000005', 5, 27),
+			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000003', '22222222-0001-0003-0000-000000000001', 1, 0),
+			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000003', '22222222-0001-0003-0000-000000000002', 2, 6),
+			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000003', '22222222-0001-0003-0000-000000000003', 3, 13),
+			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000003', '22222222-0001-0003-0000-000000000004', 4, 20),
+			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000003', '22222222-0001-0003-0000-000000000005', 5, 27),
+			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000004', '22222222-0001-0004-0000-000000000001', 1, 0),
+			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000004', '22222222-0001-0004-0000-000000000002', 2, 6),
+			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000004', '22222222-0001-0004-0000-000000000003', 3, 13),
+			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000004', '22222222-0001-0004-0000-000000000004', 4, 20),
+			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000004', '22222222-0001-0004-0000-000000000005', 5, 27),
+			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000005', '22222222-0001-0005-0000-000000000001', 1, 0),
+			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000005', '22222222-0001-0005-0000-000000000002', 2, 6),
+			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000005', '22222222-0001-0005-0000-000000000003', 3, 13),
+			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000005', '22222222-0001-0005-0000-000000000004', 4, 20),
+			(gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-0002-0001-0000-000000000005', '22222222-0001-0005-0000-000000000005', 5, 27),
 			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000001', '33333333-0001-0001-0000-000000000001', 1, 0),
 			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000001', '33333333-0001-0001-0000-000000000002', 2, 6),
 			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000001', '33333333-0001-0001-0000-000000000003', 3, 13),
 			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000001', '33333333-0001-0001-0000-000000000004', 4, 20),
 			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000001', '33333333-0001-0001-0000-000000000005', 5, 27),
-			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000002', '33333333-0001-0001-0000-000000000002', 1, 0),
-			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000002', '33333333-0001-0001-0000-000000000003', 2, 7),
-			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000002', '33333333-0001-0001-0000-000000000004', 3, 14),
-			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000002', '33333333-0001-0001-0000-000000000005', 4, 21),
-			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000002', '33333333-0001-0001-0000-000000000001', 5, 28),
-			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000003', '33333333-0001-0001-0000-000000000003', 1, 0),
-			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000003', '33333333-0001-0001-0000-000000000004', 2, 6),
-			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000003', '33333333-0001-0001-0000-000000000005', 3, 13),
-			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000003', '33333333-0001-0001-0000-000000000001', 4, 20),
-			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000003', '33333333-0001-0001-0000-000000000002', 5, 26),
-			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000004', '33333333-0001-0001-0000-000000000004', 1, 0),
-			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000004', '33333333-0001-0001-0000-000000000005', 2, 7),
-			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000004', '33333333-0001-0001-0000-000000000001', 3, 14),
-			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000004', '33333333-0001-0001-0000-000000000002', 4, 21),
-			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000004', '33333333-0001-0001-0000-000000000003', 5, 27),
-			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000005', '33333333-0001-0001-0000-000000000005', 1, 0),
-			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000005', '33333333-0001-0001-0000-000000000001', 2, 6),
-			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000005', '33333333-0001-0001-0000-000000000002', 3, 12),
-			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000005', '33333333-0001-0001-0000-000000000003', 4, 19),
-			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000005', '33333333-0001-0001-0000-000000000004', 5, 25),
+			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000002', '33333333-0001-0002-0000-000000000001', 1, 0),
+			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000002', '33333333-0001-0002-0000-000000000002', 2, 6),
+			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000002', '33333333-0001-0002-0000-000000000003', 3, 13),
+			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000002', '33333333-0001-0002-0000-000000000004', 4, 20),
+			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000002', '33333333-0001-0002-0000-000000000005', 5, 27),
+			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000003', '33333333-0001-0003-0000-000000000001', 1, 0),
+			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000003', '33333333-0001-0003-0000-000000000002', 2, 6),
+			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000003', '33333333-0001-0003-0000-000000000003', 3, 13),
+			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000003', '33333333-0001-0003-0000-000000000004', 4, 20),
+			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000003', '33333333-0001-0003-0000-000000000005', 5, 27),
+			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000004', '33333333-0001-0004-0000-000000000001', 1, 0),
+			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000004', '33333333-0001-0004-0000-000000000002', 2, 6),
+			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000004', '33333333-0001-0004-0000-000000000003', 3, 13),
+			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000004', '33333333-0001-0004-0000-000000000004', 4, 20),
+			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000004', '33333333-0001-0004-0000-000000000005', 5, 27),
+			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000005', '33333333-0001-0005-0000-000000000001', 1, 0),
+			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000005', '33333333-0001-0005-0000-000000000002', 2, 6),
+			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000005', '33333333-0001-0005-0000-000000000003', 3, 13),
+			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000005', '33333333-0001-0005-0000-000000000004', 4, 20),
+			(gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-0002-0001-0000-000000000005', '33333333-0001-0005-0000-000000000005', 5, 27),
 			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000001', '44444444-0001-0001-0000-000000000001', 1, 0),
 			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000001', '44444444-0001-0001-0000-000000000002', 2, 6),
 			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000001', '44444444-0001-0001-0000-000000000003', 3, 13),
 			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000001', '44444444-0001-0001-0000-000000000004', 4, 20),
 			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000001', '44444444-0001-0001-0000-000000000005', 5, 27),
-			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000002', '44444444-0001-0001-0000-000000000002', 1, 0),
-			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000002', '44444444-0001-0001-0000-000000000003', 2, 7),
-			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000002', '44444444-0001-0001-0000-000000000004', 3, 14),
-			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000002', '44444444-0001-0001-0000-000000000005', 4, 21),
-			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000002', '44444444-0001-0001-0000-000000000001', 5, 28),
-			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000003', '44444444-0001-0001-0000-000000000003', 1, 0),
-			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000003', '44444444-0001-0001-0000-000000000004', 2, 6),
-			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000003', '44444444-0001-0001-0000-000000000005', 3, 13),
-			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000003', '44444444-0001-0001-0000-000000000001', 4, 20),
-			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000003', '44444444-0001-0001-0000-000000000002', 5, 26),
-			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000004', '44444444-0001-0001-0000-000000000004', 1, 0),
-			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000004', '44444444-0001-0001-0000-000000000005', 2, 7),
-			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000004', '44444444-0001-0001-0000-000000000001', 3, 14),
-			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000004', '44444444-0001-0001-0000-000000000002', 4, 21),
-			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000004', '44444444-0001-0001-0000-000000000003', 5, 27),
-			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000005', '44444444-0001-0001-0000-000000000005', 1, 0),
-			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000005', '44444444-0001-0001-0000-000000000001', 2, 6),
-			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000005', '44444444-0001-0001-0000-000000000002', 3, 12),
-			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000005', '44444444-0001-0001-0000-000000000003', 4, 19),
-			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000005', '44444444-0001-0001-0000-000000000004', 5, 25),
+			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000002', '44444444-0001-0002-0000-000000000001', 1, 0),
+			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000002', '44444444-0001-0002-0000-000000000002', 2, 6),
+			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000002', '44444444-0001-0002-0000-000000000003', 3, 13),
+			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000002', '44444444-0001-0002-0000-000000000004', 4, 20),
+			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000002', '44444444-0001-0002-0000-000000000005', 5, 27),
+			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000003', '44444444-0001-0003-0000-000000000001', 1, 0),
+			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000003', '44444444-0001-0003-0000-000000000002', 2, 6),
+			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000003', '44444444-0001-0003-0000-000000000003', 3, 13),
+			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000003', '44444444-0001-0003-0000-000000000004', 4, 20),
+			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000003', '44444444-0001-0003-0000-000000000005', 5, 27),
+			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000004', '44444444-0001-0004-0000-000000000001', 1, 0),
+			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000004', '44444444-0001-0004-0000-000000000002', 2, 6),
+			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000004', '44444444-0001-0004-0000-000000000003', 3, 13),
+			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000004', '44444444-0001-0004-0000-000000000004', 4, 20),
+			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000004', '44444444-0001-0004-0000-000000000005', 5, 27),
+			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000005', '44444444-0001-0005-0000-000000000001', 1, 0),
+			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000005', '44444444-0001-0005-0000-000000000002', 2, 6),
+			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000005', '44444444-0001-0005-0000-000000000003', 3, 13),
+			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000005', '44444444-0001-0005-0000-000000000004', 4, 20),
+			(gen_random_uuid(), '44444444-4444-4444-4444-444444444444', '44444444-0002-0001-0000-000000000005', '44444444-0001-0005-0000-000000000005', 5, 27),
 			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000001', '55555555-0001-0001-0000-000000000001', 1, 0),
 			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000001', '55555555-0001-0001-0000-000000000002', 2, 6),
 			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000001', '55555555-0001-0001-0000-000000000003', 3, 13),
 			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000001', '55555555-0001-0001-0000-000000000004', 4, 20),
 			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000001', '55555555-0001-0001-0000-000000000005', 5, 27),
-			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000002', '55555555-0001-0001-0000-000000000002', 1, 0),
-			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000002', '55555555-0001-0001-0000-000000000003', 2, 7),
-			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000002', '55555555-0001-0001-0000-000000000004', 3, 14),
-			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000002', '55555555-0001-0001-0000-000000000005', 4, 21),
-			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000002', '55555555-0001-0001-0000-000000000001', 5, 28),
-			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000003', '55555555-0001-0001-0000-000000000003', 1, 0),
-			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000003', '55555555-0001-0001-0000-000000000004', 2, 6),
-			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000003', '55555555-0001-0001-0000-000000000005', 3, 13),
-			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000003', '55555555-0001-0001-0000-000000000001', 4, 20),
-			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000003', '55555555-0001-0001-0000-000000000002', 5, 26),
-			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000004', '55555555-0001-0001-0000-000000000004', 1, 0),
-			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000004', '55555555-0001-0001-0000-000000000005', 2, 7),
-			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000004', '55555555-0001-0001-0000-000000000001', 3, 14),
-			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000004', '55555555-0001-0001-0000-000000000002', 4, 21),
-			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000004', '55555555-0001-0001-0000-000000000003', 5, 27),
-			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000005', '55555555-0001-0001-0000-000000000005', 1, 0),
-			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000005', '55555555-0001-0001-0000-000000000001', 2, 6),
-			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000005', '55555555-0001-0001-0000-000000000002', 3, 12),
-			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000005', '55555555-0001-0001-0000-000000000003', 4, 19),
-			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000005', '55555555-0001-0001-0000-000000000004', 5, 25),
+			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000002', '55555555-0001-0002-0000-000000000001', 1, 0),
+			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000002', '55555555-0001-0002-0000-000000000002', 2, 6),
+			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000002', '55555555-0001-0002-0000-000000000003', 3, 13),
+			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000002', '55555555-0001-0002-0000-000000000004', 4, 20),
+			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000002', '55555555-0001-0002-0000-000000000005', 5, 27),
+			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000003', '55555555-0001-0003-0000-000000000001', 1, 0),
+			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000003', '55555555-0001-0003-0000-000000000002', 2, 6),
+			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000003', '55555555-0001-0003-0000-000000000003', 3, 13),
+			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000003', '55555555-0001-0003-0000-000000000004', 4, 20),
+			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000003', '55555555-0001-0003-0000-000000000005', 5, 27),
+			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000004', '55555555-0001-0004-0000-000000000001', 1, 0),
+			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000004', '55555555-0001-0004-0000-000000000002', 2, 6),
+			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000004', '55555555-0001-0004-0000-000000000003', 3, 13),
+			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000004', '55555555-0001-0004-0000-000000000004', 4, 20),
+			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000004', '55555555-0001-0004-0000-000000000005', 5, 27),
+			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000005', '55555555-0001-0005-0000-000000000001', 1, 0),
+			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000005', '55555555-0001-0005-0000-000000000002', 2, 6),
+			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000005', '55555555-0001-0005-0000-000000000003', 3, 13),
+			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000005', '55555555-0001-0005-0000-000000000004', 4, 20),
+			(gen_random_uuid(), '55555555-5555-5555-5555-555555555555', '55555555-0002-0001-0000-000000000005', '55555555-0001-0005-0000-000000000005', 5, 27),
 			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000001', '66666666-0001-0001-0000-000000000001', 1, 0),
 			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000001', '66666666-0001-0001-0000-000000000002', 2, 6),
 			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000001', '66666666-0001-0001-0000-000000000003', 3, 13),
 			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000001', '66666666-0001-0001-0000-000000000004', 4, 20),
 			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000001', '66666666-0001-0001-0000-000000000005', 5, 27),
-			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000002', '66666666-0001-0001-0000-000000000002', 1, 0),
-			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000002', '66666666-0001-0001-0000-000000000003', 2, 7),
-			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000002', '66666666-0001-0001-0000-000000000004', 3, 14),
-			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000002', '66666666-0001-0001-0000-000000000005', 4, 21),
-			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000002', '66666666-0001-0001-0000-000000000001', 5, 28),
-			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000003', '66666666-0001-0001-0000-000000000003', 1, 0),
-			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000003', '66666666-0001-0001-0000-000000000004', 2, 6),
-			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000003', '66666666-0001-0001-0000-000000000005', 3, 13),
-			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000003', '66666666-0001-0001-0000-000000000001', 4, 20),
-			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000003', '66666666-0001-0001-0000-000000000002', 5, 26),
-			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000004', '66666666-0001-0001-0000-000000000004', 1, 0),
-			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000004', '66666666-0001-0001-0000-000000000005', 2, 7),
-			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000004', '66666666-0001-0001-0000-000000000001', 3, 14),
-			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000004', '66666666-0001-0001-0000-000000000002', 4, 21),
-			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000004', '66666666-0001-0001-0000-000000000003', 5, 27),
-			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000005', '66666666-0001-0001-0000-000000000005', 1, 0),
-			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000005', '66666666-0001-0001-0000-000000000001', 2, 6),
-			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000005', '66666666-0001-0001-0000-000000000002', 3, 12),
-			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000005', '66666666-0001-0001-0000-000000000003', 4, 19),
-			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000005', '66666666-0001-0001-0000-000000000004', 5, 25),
+			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000002', '66666666-0001-0002-0000-000000000001', 1, 0),
+			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000002', '66666666-0001-0002-0000-000000000002', 2, 6),
+			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000002', '66666666-0001-0002-0000-000000000003', 3, 13),
+			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000002', '66666666-0001-0002-0000-000000000004', 4, 20),
+			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000002', '66666666-0001-0002-0000-000000000005', 5, 27),
+			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000003', '66666666-0001-0003-0000-000000000001', 1, 0),
+			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000003', '66666666-0001-0003-0000-000000000002', 2, 6),
+			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000003', '66666666-0001-0003-0000-000000000003', 3, 13),
+			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000003', '66666666-0001-0003-0000-000000000004', 4, 20),
+			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000003', '66666666-0001-0003-0000-000000000005', 5, 27),
+			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000004', '66666666-0001-0004-0000-000000000001', 1, 0),
+			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000004', '66666666-0001-0004-0000-000000000002', 2, 6),
+			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000004', '66666666-0001-0004-0000-000000000003', 3, 13),
+			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000004', '66666666-0001-0004-0000-000000000004', 4, 20),
+			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000004', '66666666-0001-0004-0000-000000000005', 5, 27),
+			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000005', '66666666-0001-0005-0000-000000000001', 1, 0),
+			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000005', '66666666-0001-0005-0000-000000000002', 2, 6),
+			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000005', '66666666-0001-0005-0000-000000000003', 3, 13),
+			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000005', '66666666-0001-0005-0000-000000000004', 4, 20),
+			(gen_random_uuid(), '66666666-6666-6666-6666-666666666666', '66666666-0002-0001-0000-000000000005', '66666666-0001-0005-0000-000000000005', 5, 27),
 			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000001', '77777777-0001-0001-0000-000000000001', 1, 0),
 			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000001', '77777777-0001-0001-0000-000000000002', 2, 6),
 			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000001', '77777777-0001-0001-0000-000000000003', 3, 13),
 			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000001', '77777777-0001-0001-0000-000000000004', 4, 20),
 			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000001', '77777777-0001-0001-0000-000000000005', 5, 27),
-			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000002', '77777777-0001-0001-0000-000000000002', 1, 0),
-			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000002', '77777777-0001-0001-0000-000000000003', 2, 7),
-			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000002', '77777777-0001-0001-0000-000000000004', 3, 14),
-			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000002', '77777777-0001-0001-0000-000000000005', 4, 21),
-			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000002', '77777777-0001-0001-0000-000000000001', 5, 28),
-			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000003', '77777777-0001-0001-0000-000000000003', 1, 0),
-			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000003', '77777777-0001-0001-0000-000000000004', 2, 6),
-			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000003', '77777777-0001-0001-0000-000000000005', 3, 13),
-			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000003', '77777777-0001-0001-0000-000000000001', 4, 20),
-			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000003', '77777777-0001-0001-0000-000000000002', 5, 26),
-			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000004', '77777777-0001-0001-0000-000000000004', 1, 0),
-			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000004', '77777777-0001-0001-0000-000000000005', 2, 7),
-			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000004', '77777777-0001-0001-0000-000000000001', 3, 14),
-			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000004', '77777777-0001-0001-0000-000000000002', 4, 21),
-			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000004', '77777777-0001-0001-0000-000000000003', 5, 27),
-			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000005', '77777777-0001-0001-0000-000000000005', 1, 0),
-			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000005', '77777777-0001-0001-0000-000000000001', 2, 6),
-			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000005', '77777777-0001-0001-0000-000000000002', 3, 12),
-			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000005', '77777777-0001-0001-0000-000000000003', 4, 19),
-			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000005', '77777777-0001-0001-0000-000000000004', 5, 25)
-		ON CONFLICT (route_id, stop_id) DO UPDATE SET
-			stop_sequence = EXCLUDED.stop_sequence,
-			eta_offset_minutes = EXCLUDED.eta_offset_minutes`,
-		`INSERT INTO trips (id, tenant_id, bus_id, route_id, departure_time, status)
-		SELECT 
-			('00000000-0004-' || substr(b.id::text, 1, 4) || '-' || substr(b.id::text, 5, 4) || '-' || substr(b.id::text, 25, 12))::uuid,
-			b.tenant_id,
-			b.id,
-			b.route_id,
-			NOW() + ((substr(b.id::text, 36, 1)::int * 5) * INTERVAL '1 minute'),
-			'SCHEDULED'
-		FROM buses b
-		WHERE b.route_id IS NOT NULL
-		ON CONFLICT (id) DO UPDATE SET
-			bus_id = EXCLUDED.bus_id,
-			route_id = EXCLUDED.route_id,
-			status = EXCLUDED.status`,
+			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000002', '77777777-0001-0002-0000-000000000001', 1, 0),
+			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000002', '77777777-0001-0002-0000-000000000002', 2, 6),
+			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000002', '77777777-0001-0002-0000-000000000003', 3, 13),
+			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000002', '77777777-0001-0002-0000-000000000004', 4, 20),
+			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000002', '77777777-0001-0002-0000-000000000005', 5, 27),
+			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000003', '77777777-0001-0003-0000-000000000001', 1, 0),
+			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000003', '77777777-0001-0003-0000-000000000002', 2, 6),
+			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000003', '77777777-0001-0003-0000-000000000003', 3, 13),
+			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000003', '77777777-0001-0003-0000-000000000004', 4, 20),
+			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000003', '77777777-0001-0003-0000-000000000005', 5, 27),
+			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000004', '77777777-0001-0004-0000-000000000001', 1, 0),
+			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000004', '77777777-0001-0004-0000-000000000002', 2, 6),
+			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000004', '77777777-0001-0004-0000-000000000003', 3, 13),
+			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000004', '77777777-0001-0004-0000-000000000004', 4, 20),
+			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000004', '77777777-0001-0004-0000-000000000005', 5, 27),
+			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000005', '77777777-0001-0005-0000-000000000001', 1, 0),
+			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000005', '77777777-0001-0005-0000-000000000002', 2, 6),
+			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000005', '77777777-0001-0005-0000-000000000003', 3, 13),
+			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000005', '77777777-0001-0005-0000-000000000004', 4, 20),
+			(gen_random_uuid(), '77777777-7777-7777-7777-777777777777', '77777777-0002-0001-0000-000000000005', '77777777-0001-0005-0000-000000000005', 5, 27)`,
 		`UPDATE buses SET route_variant = 'PRIMARY_ROUTE_1', traffic_level = 'NORMAL', delay_minutes = 0.0, dwell_seconds = 20, segment_progress = 0.15 WHERE route_variant IS NULL OR route_variant = ''`,
 		`UPDATE buses SET route_variant = 'ALTERNATE_ROUTE_2', traffic_level = 'HEAVY', delay_minutes = 4.8, dwell_seconds = 25, segment_progress = 0.35, is_detour = true, detour_reason = 'Heavy traffic on Route 1 Primary Corridor' WHERE id IN ('11111111-0003-0001-0000-000000000002', '22222222-0003-0001-0000-000000000002', '33333333-0003-0001-0000-000000000002', '44444444-0003-0001-0000-000000000002', '55555555-0003-0001-0000-000000000002', '66666666-0003-0001-0000-000000000002', '77777777-0003-0001-0000-000000000002')`,
 	}
 	for _, q := range queries {
-		_, _ = s.pool.Pool.Exec(ctx, q)
+		tx, txErr := s.pool.Pool.Begin(ctx)
+		if txErr == nil {
+			_, _ = tx.Exec(ctx, "SET LOCAL app.current_tenant = 'SUPER_ADMIN'")
+			_, _ = tx.Exec(ctx, q)
+			_ = tx.Commit(ctx)
+		}
 	}
 	return nil
 }
